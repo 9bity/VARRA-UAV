@@ -79,6 +79,25 @@ class UAV90KDataTest(unittest.TestCase):
             prediction.heading_cos**2 + prediction.heading_sin**2, 1.0, places=4
         )
 
+    @unittest.skipUnless(os.environ.get("UAV90K_ROOT"), "UAV90K_ROOT is not set")
+    def test_negative_candidate_has_masked_pose_target(self) -> None:
+        catalog = UAV90KCatalog(Path(os.environ["UAV90K_ROOT"]))
+        record = catalog.queries_for_split("train")[0]
+        other_city = next(city for city in catalog.maps_by_city if city != record.city)
+        negative_center = catalog.tile_id(other_city, 8, 8)
+        self.assertIsNotNone(negative_center)
+        dataset = LocalRegistrationDataset(
+            catalog,
+            "train",
+            query_transform=DINOImageTransform(28),
+            tile_transform=DINOImageTransform(28),
+            negative_candidates={record.sample_id: [negative_center]},
+            negative_probability=1.0,
+        )
+        sample = dataset[0]
+        self.assertEqual(float(sample["candidate_label"]), 0.0)
+        self.assertTrue(torch.equal(sample["target_xy"], torch.tensor([0.5, 0.5])))
+
 
 if __name__ == "__main__":
     unittest.main()

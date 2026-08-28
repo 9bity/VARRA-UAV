@@ -44,3 +44,32 @@ retrieval-mined negative candidates are added.
 The fixed five-metric evaluation protocol is defined in
 [`docs/EVALUATION.md`](docs/EVALUATION.md) and implemented by
 `uavgeo.metrics`.
+
+After stage one, build the satellite index, mine retrieval hard negatives, and
+fine-tune candidate confidence:
+
+```bash
+python scripts/build_satellite_index.py \
+  --dataset /root/autodl-tmp/UAV/UAV90K \
+  --checkpoint /root/autodl-tmp/UAV/runs/stage1/best.pt \
+  --output /root/autodl-tmp/UAV/UAV90K/features/index/stage1.pt
+
+python scripts/mine_hard_negatives.py \
+  --dataset /root/autodl-tmp/UAV/UAV90K \
+  --checkpoint /root/autodl-tmp/UAV/runs/stage1/best.pt \
+  --index /root/autodl-tmp/UAV/UAV90K/features/index/stage1.pt \
+  --output /root/autodl-tmp/UAV/UAV90K/features/index/hard_negatives.csv
+
+python scripts/train.py \
+  --dataset /root/autodl-tmp/UAV/UAV90K \
+  --output-dir /root/autodl-tmp/UAV/runs/stage2 \
+  --init-checkpoint /root/autodl-tmp/UAV/runs/stage1/best.pt \
+  --negative-manifest /root/autodl-tmp/UAV/UAV90K/features/index/hard_negatives.csv \
+  --negative-probability 0.5 \
+  --confidence-weight 0.5 \
+  --batch-size 2
+```
+
+`--resume` restores an interrupted run including optimizer, scheduler, scaler,
+data-loader generator, and random states. `--init-checkpoint` starts a new
+training stage from model weights only.

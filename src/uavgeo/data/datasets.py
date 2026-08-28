@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Mapping, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -144,12 +144,18 @@ class LocalRegistrationDataset(Dataset[dict[str, Any]]):
         query_transform: Optional[ImageTransform] = None,
         tile_transform: Optional[ImageTransform] = None,
         tile_size: int = 256,
+        negative_candidates: Optional[Mapping[str, Sequence[str]]] = None,
+        negative_probability: float = 0.0,
     ) -> None:
+        if not 0.0 <= negative_probability <= 1.0:
+            raise ValueError("negative_probability must be in [0,1]")
         self.catalog = catalog
         self.records = catalog.queries_for_split(split)
         self.query_transform = query_transform or DINOImageTransform(252)
         self.tile_transform = tile_transform or DINOImageTransform(252)
         self.tile_size = tile_size
+        self.negative_candidates = negative_candidates or {}
+        self.negative_probability = negative_probability
         self.candidate_loader = SatelliteCandidateLoader(
             catalog, self.tile_transform, tile_size
         )
@@ -161,11 +167,33 @@ class LocalRegistrationDataset(Dataset[dict[str, Any]]):
     def __len__(self) -> int:
         return len(self.records)
 
-    def _candidate_center(self, record: QueryRecord) -> str:
-        candidates = self.catalog.positive_candidate_centers(record)
+    def _candidate_center(self, record: QueryRecord) -> tuple[str, bool]:
         key = f"{record.sample_id}:{self.epoch}".encode("utf-8")
-        choice = int.from_bytes(hashlib.sha256(key).digest()[:8], "little") % len(candidates)
-        return candidates[choice]
+        digest = hashlib.sha256(key).digest()
+        negatives = self.negative_candidates.get(record.sample_id, ())
+        use_negative = (
+            bool(negatives)
+            and int.from_bytes(digest[:8], "little") / 2**64
+            < self.negative_probability
+        )
+        if use_negative:
+            choice = int.from_bytes(digest[8:16], "little") % len(negatives)
+            center = negatives[choice]
+            if center not in self.catalog.tiles:
+                raise ValueError(f"Unknown negative candidate center: {center}")
+            neighborhood_ids = {
+                tile.tile_id
+                for tile in self.catalog.neighborhood(center)
+                if tile is not None
+            }
+            if record.gt_tile_id in neighborhood_ids:
+                raise ValueError(
+                    f"Mislabeled negative contains GT tile: {record.sample_id}, {center}"
+                )
+            return center, False
+        positives = self.catalog.positive_candidate_centers(record)
+        choice = int.from_bytes(digest[8:16], "little") % len(positives)
+        return positives[choice], True
 
     def _load_satellite_grid(self, center_tile_id: str) -> tuple[Tensor, Tensor]:
         tiles, validity, _ = self.candidate_loader.load(center_tile_id)
@@ -174,15 +202,19 @@ class LocalRegistrationDataset(Dataset[dict[str, Any]]):
     def __getitem__(self, index: int) -> dict[str, Any]:
         record = self.records[index]
         positive_tile = self.catalog.tiles[record.gt_tile_id]
-        center_tile_id = self._candidate_center(record)
+        center_tile_id, is_positive = self._candidate_center(record)
         satellite_grid, tile_validity, mosaic_origin = self.candidate_loader.load(
             center_tile_id
         )
         mosaic_origin_x = float(mosaic_origin[0])
         mosaic_origin_y = float(mosaic_origin[1])
-        target_x = (record.global_x - mosaic_origin_x) / (3 * self.tile_size)
-        target_y = (record.global_y - mosaic_origin_y) / (3 * self.tile_size)
-        if not (0.0 <= target_x <= 1.0 and 0.0 <= target_y <= 1.0):
+        if is_positive:
+            target_x = (record.global_x - mosaic_origin_x) / (3 * self.tile_size)
+            target_y = (record.global_y - mosaic_origin_y) / (3 * self.tile_size)
+        else:
+            # Local pose labels are masked for negatives by GlobalToLocalLoss.
+            target_x = target_y = 0.5
+        if is_positive and not (0.0 <= target_x <= 1.0 and 0.0 <= target_y <= 1.0):
             raise RuntimeError(f"Target outside positive mosaic: {record.sample_id}")
 
         return {
@@ -201,6 +233,6 @@ class LocalRegistrationDataset(Dataset[dict[str, Any]]):
             "target_xy": torch.tensor((target_x, target_y), dtype=torch.float32),
             "global_xy": torch.tensor((record.global_x, record.global_y), dtype=torch.float32),
             "heading": torch.tensor((record.heading_cos, record.heading_sin), dtype=torch.float32),
-            "candidate_label": torch.tensor(1.0, dtype=torch.float32),
+            "candidate_label": torch.tensor(float(is_positive), dtype=torch.float32),
             "tile_validity": tile_validity,
         }

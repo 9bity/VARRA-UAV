@@ -10,6 +10,7 @@ import torch
 from torch import nn
 
 from uavgeo.losses import GlobalToLocalLoss
+from uavgeo.mining import read_negative_manifest, write_negative_manifest
 from uavgeo.models.backbone import DINOv2Backbone
 from uavgeo.models.system import GlobalToLocalModel
 from uavgeo.models.retrieval import SatelliteFeatureIndex
@@ -32,6 +33,17 @@ class FakeDINO(nn.Module):
 
 
 class GlobalToLocalSmokeTest(unittest.TestCase):
+    def test_negative_manifest_round_trip(self) -> None:
+        expected = {
+            "sample_a": ("tile_1", "tile_2"),
+            "sample_b": ("tile_3",),
+        }
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "negatives.csv"
+            write_negative_manifest(path, expected)
+            restored = read_negative_manifest(path)
+        self.assertEqual(restored, expected)
+
     def test_serializable_satellite_index(self) -> None:
         index = SatelliteFeatureIndex(
             ["tile_a", "tile_b", "tile_c"],
@@ -133,6 +145,27 @@ class GlobalToLocalSmokeTest(unittest.TestCase):
         ]
         self.assertTrue(trainable_gradients)
         self.assertTrue(all(torch.isfinite(gradient).all() for gradient in trainable_gradients))
+
+        first_targets = torch.tensor([[0.4, 0.6], [0.0, 0.0]])
+        second_targets = torch.tensor([[0.4, 0.6], [1.0, 1.0]])
+        candidate_labels = torch.tensor([1.0, 0.0])
+        first_masked = GlobalToLocalLoss()(
+            output,
+            target_xy=first_targets,
+            target_heading=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+            positive_mask=positive_mask,
+            candidate_label=candidate_labels,
+        )
+        second_masked = GlobalToLocalLoss()(
+            output,
+            target_xy=second_targets,
+            target_heading=torch.tensor([[1.0, 0.0], [-1.0, 0.0]]),
+            positive_mask=positive_mask,
+            candidate_label=candidate_labels,
+        )
+        self.assertTrue(torch.equal(first_masked.position, second_masked.position))
+        self.assertTrue(torch.equal(first_masked.heatmap, second_masked.heatmap))
+        self.assertTrue(torch.equal(first_masked.heading, second_masked.heading))
 
 
 if __name__ == "__main__":

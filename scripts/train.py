@@ -20,6 +20,7 @@ from torch.utils.data import DataLoader
 from uavgeo.data.catalog import UAV90KCatalog
 from uavgeo.data.datasets import LocalRegistrationDataset
 from uavgeo.losses import GlobalToLocalLoss, LossOutput
+from uavgeo.mining import read_negative_manifest
 from uavgeo.models.system import GlobalToLocalModel
 from uavgeo.training import (
     append_jsonl,
@@ -54,6 +55,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local-model-dim", type=int, default=256)
     parser.add_argument("--adapter-dim", type=int, default=128)
     parser.add_argument("--num-heads", type=int, default=8)
+    parser.add_argument("--negative-manifest", type=Path)
+    parser.add_argument("--negative-probability", type=float, default=0.0)
+    parser.add_argument("--confidence-weight", type=float, default=0.0)
+    parser.add_argument("--init-checkpoint", type=Path)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--log-interval", type=int, default=50)
     parser.add_argument("--limit-train-batches", type=int)
@@ -97,6 +102,7 @@ def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Tensor]
         "tile_validity",
         "target_xy",
         "heading",
+        "candidate_label",
     )
     return {
         key: batch[key].to(device, non_blocking=device.type == "cuda")
@@ -133,7 +139,7 @@ def batch_losses(
             tensors["target_xy"],
             tensors["heading"],
             positive_mask=positive_mask,
-            candidate_label=None,
+            candidate_label=tensors["candidate_label"],
         )
 
 
@@ -225,6 +231,14 @@ def main() -> None:
         raise ValueError("batch-size must be at least 2 because retrieval needs in-batch negatives")
     if args.epochs <= 0:
         raise ValueError("epochs must be positive")
+    if not 0.0 <= args.negative_probability <= 1.0:
+        raise ValueError("negative-probability must be in [0,1]")
+    if args.negative_probability > 0 and args.negative_manifest is None:
+        raise ValueError("negative-probability requires --negative-manifest")
+    if args.confidence_weight > 0 and args.negative_probability <= 0:
+        raise ValueError("confidence loss requires negative candidate sampling")
+    if args.init_checkpoint is not None and args.resume is not None:
+        raise ValueError("Use either --init-checkpoint or --resume, not both")
 
     device = resolve_device(args.device)
     amp_enabled = bool(args.amp and device.type == "cuda")
@@ -233,8 +247,23 @@ def main() -> None:
     save_configuration(args, args.output_dir / "config.json")
 
     catalog = UAV90KCatalog(args.dataset)
-    train_dataset = LocalRegistrationDataset(catalog, "train")
-    val_dataset = LocalRegistrationDataset(catalog, "val")
+    negative_candidates = (
+        read_negative_manifest(args.negative_manifest)
+        if args.negative_manifest is not None
+        else None
+    )
+    train_dataset = LocalRegistrationDataset(
+        catalog,
+        "train",
+        negative_candidates=negative_candidates,
+        negative_probability=args.negative_probability,
+    )
+    val_dataset = LocalRegistrationDataset(
+        catalog,
+        "val",
+        negative_candidates=negative_candidates,
+        negative_probability=args.negative_probability,
+    )
     loader_generator = torch.Generator().manual_seed(args.seed)
     train_loader = make_loader(
         train_dataset, args.batch_size, args.num_workers, True, loader_generator
@@ -251,7 +280,11 @@ def main() -> None:
         adapter_dim=args.adapter_dim,
         num_heads=args.num_heads,
     ).to(device)
-    criterion = GlobalToLocalLoss(confidence_weight=0.0)
+    if args.init_checkpoint is not None:
+        initial = torch.load(args.init_checkpoint, map_location=device)
+        model.load_state_dict(initial["model"])
+        print(f"initialized model weights from {args.init_checkpoint}")
+    criterion = GlobalToLocalLoss(confidence_weight=args.confidence_weight)
     optimizer = AdamW(
         trainable_parameters(model),
         lr=args.learning_rate,

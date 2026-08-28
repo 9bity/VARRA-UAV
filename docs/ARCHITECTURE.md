@@ -68,6 +68,13 @@ while retrieval uses in-batch satellite negatives and a tile-ID-derived
 multi-positive mask. Candidate confidence must not be enabled until negative
 candidates are present.
 
+After stage one, the frozen satellite index retrieves high-scoring candidate
+centers for every training and validation query. A center is a valid hard
+negative only when its complete 3x3 neighborhood excludes the query's GT tile.
+Stage two mixes these candidates with positives. Position, heatmap, and heading
+losses are masked on negative candidates, while binary candidate-confidence
+loss is evaluated on both classes.
+
 The provided loss module combines multi-positive contrastive retrieval,
 continuous position regression, continuous-point heatmap likelihood, circular
 heading similarity, and optional candidate-confidence supervision. The

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import torch
 from torch import nn
@@ -10,6 +12,7 @@ from torch import nn
 from uavgeo.losses import GlobalToLocalLoss
 from uavgeo.models.backbone import DINOv2Backbone
 from uavgeo.models.system import GlobalToLocalModel
+from uavgeo.models.retrieval import SatelliteFeatureIndex
 from uavgeo.models.varra import weighted_similarity_transform
 from uavgeo.training import build_multi_positive_mask
 
@@ -29,6 +32,21 @@ class FakeDINO(nn.Module):
 
 
 class GlobalToLocalSmokeTest(unittest.TestCase):
+    def test_serializable_satellite_index(self) -> None:
+        index = SatelliteFeatureIndex(
+            ["tile_a", "tile_b", "tile_c"],
+            torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]),
+        )
+        result = index.search(torch.tensor([[0.9, 0.1]]), top_k=2)
+        self.assertEqual(index.tile_ids_for(result.indices), [["tile_a", "tile_b"]])
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "index.pt"
+            index.save(path, metadata={"epoch": 3})
+            restored, metadata = SatelliteFeatureIndex.load(path)
+        self.assertEqual(restored.tile_ids, index.tile_ids)
+        self.assertTrue(torch.equal(restored.descriptors, index.descriptors))
+        self.assertEqual(metadata, {"epoch": 3})
+
     def test_multi_positive_mask(self) -> None:
         mask = build_multi_positive_mask(
             ["tile_a", "tile_a", "tile_b"],

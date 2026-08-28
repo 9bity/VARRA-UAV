@@ -25,6 +25,7 @@ class GlobalToLocalModel(nn.Module):
     def __init__(
         self,
         backbone_name: str = "dinov2_vitb14",
+        backbone_pretrained: bool = True,
         freeze_backbone: bool = True,
         retrieval_dim: int = 256,
         local_model_dim: int = 256,
@@ -35,6 +36,7 @@ class GlobalToLocalModel(nn.Module):
         super().__init__()
         self.backbone = backbone or DINOv2Backbone(
             model_name=backbone_name,
+            pretrained=backbone_pretrained,
             freeze=freeze_backbone,
         )
         self.retrieval = RetrievalHead(

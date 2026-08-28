@@ -1,0 +1,43 @@
+{
+  "name": "UAV90K",
+  "source_dataset": "Bearing-UAV-90K",
+  "source_root": "D:\\Bearing-UAV\\bearinguav\\Bearing_UAV_90K",
+  "link_mode": "hardlink",
+  "query_modality": "single real UAV-view patch",
+  "reference_modality": "offline satellite tile database",
+  "tile_size": 256,
+  "map_size": [
+    4096,
+    4096
+  ],
+  "cities": [
+    "citya",
+    "cityb",
+    "cityc",
+    "cityd"
+  ],
+  "counts": {
+    "maps": 4,
+    "satellite_tiles": 1024,
+    "neighborhoods": 1024,
+    "samples": 90000,
+    "train": 76500,
+    "val": 4500,
+    "test": 9000
+  },
+  "split": {
+    "seed": 42,
+    "method": "per-city Python random.Random shuffle",
+    "ratios": {
+      "train": 0.85,
+      "val": 0.05,
+      "test": 0.1
+    }
+  },
+  "coordinate_system": {
+    "global_origin": "top-left of 4096x4096 city map",
+    "global_x": "right-positive pixels",
+    "global_y": "down-positive pixels",
+    "heading": "counter-clockwise from image x-axis, normalized to [0,360)"
+  }
+}

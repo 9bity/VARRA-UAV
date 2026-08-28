@@ -1,0 +1,5 @@
+map_id,city,image_path,json_path,width,height,center_latitude,center_longitude,lat_per_pixel,lng_per_pixel,meters_per_pixel_x,meters_per_pixel_y
+citya_map,citya,maps/citya/map.jpg,maps/citya/map.json,4096,4096,35.67091338738739,139.69289911300856,2.2522522522522524e-06,2.772413392499366e-06,0.25,0.25
+cityb_map,cityb,maps/cityb/map.jpg,maps/cityb/map.json,4096,4096,25.030947387387386,121.51462868800057,2.2522522522522524e-06,2.485711838220355e-06,0.25,0.25
+cityc_map,cityc,maps/cityc/map.jpg,maps/cityc/map.json,4096,4096,1.2897673873873876,103.84197619336068,2.2522522522522524e-06,2.2528230158374865e-06,0.25,0.25
+cityd_map,cityd,maps/cityd/map.jpg,maps/cityd/map.json,4096,4096,37.75538738738739,-122.4533351740761,2.2522522522522524e-06,2.8486732617706965e-06,0.25,0.25

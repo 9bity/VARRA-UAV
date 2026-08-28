@@ -14,3 +14,7 @@ Dataset images are intentionally excluded from Git. See
 [`docs/UAV90K.md`](docs/UAV90K.md) for the dataset schema and reconstruction
 instructions.
 
+The initial trainable model framework is documented in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). It includes typed UAV90K data
+access, a shared frozen DINOv2 wrapper, multi-positive global retrieval, VARRA
+local correspondence, and continuous position/heading/confidence heads.

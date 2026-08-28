@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -33,6 +34,21 @@ class FakeDINO(nn.Module):
 
 
 class GlobalToLocalSmokeTest(unittest.TestCase):
+    def test_explicit_model_does_not_require_hub_configuration(self) -> None:
+        previous_repo = os.environ.get("DINOV2_REPO")
+        os.environ["DINOV2_REPO"] = "/path/that/does/not/exist"
+        try:
+            backbone = DINOv2Backbone(
+                model_name="dinov2_vitb14", freeze=True, model=FakeDINO()
+            )
+            output = backbone(torch.randn(1, 3, 28, 28))
+        finally:
+            if previous_repo is None:
+                os.environ.pop("DINOV2_REPO", None)
+            else:
+                os.environ["DINOV2_REPO"] = previous_repo
+        self.assertEqual(tuple(output.patch_tokens.shape), (1, 4, 768))
+
     def test_negative_manifest_round_trip(self) -> None:
         expected = {
             "sample_a": ("tile_1", "tile_2"),

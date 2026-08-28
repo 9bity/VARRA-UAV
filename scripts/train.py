@@ -113,7 +113,10 @@ def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Tensor]
 def autocast_context(device: torch.device, enabled: bool) -> Any:
     if not enabled:
         return nullcontext()
-    return torch.autocast(device_type=device.type, dtype=torch.float16)
+    # The reciprocal-attention path contains very small probabilities.  BF16
+    # keeps FP32's exponent range, avoiding FP16 underflow and non-finite
+    # gradients while retaining Tensor Core acceleration on supported GPUs.
+    return torch.autocast(device_type=device.type, dtype=torch.bfloat16)
 
 
 def batch_losses(

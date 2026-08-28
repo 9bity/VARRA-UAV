@@ -26,6 +26,8 @@ positive-candidate training stage:
 
 ```bash
 pip install -e .
+DINOV2_REPO=/root/autodl-tmp/UAV/pretrained/torch_hub/facebookresearch_dinov2_main \
+DINOV2_WEIGHTS=/root/autodl-tmp/UAV/pretrained/dinov2_vitb14_pretrain.pth \
 python scripts/train.py \
   --dataset /root/autodl-tmp/UAV/UAV90K \
   --output-dir /root/autodl-tmp/UAV/runs/stage1 \

@@ -40,3 +40,7 @@ and atomic latest/best checkpoints. Retrieval positives are grouped by
 Candidate-confidence loss is deliberately disabled in stage one because the
 current dataset supplies positive 3x3 candidates only. It will be enabled after
 retrieval-mined negative candidates are added.
+
+The fixed five-metric evaluation protocol is defined in
+[`docs/EVALUATION.md`](docs/EVALUATION.md) and implemented by
+`uavgeo.metrics`.

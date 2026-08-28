@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local datasets and generated model artifacts
+UAV90K/images/
+UAV90K/maps/
+UAV90K/features/
+checkpoints/
+outputs/
+runs/
+
+# Large generated metadata can be reproduced with scripts/build_uav90k.py
+UAV90K/metadata/samples.csv
+UAV90K/metadata/splits/*.txt
+

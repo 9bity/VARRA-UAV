@@ -85,6 +85,34 @@ class GlobalToLocalModel(nn.Module):
         )
         return tokens, (3 * tile_grid_h, 3 * tile_grid_w)
 
+    def localize_candidates(
+        self,
+        query: DINOFeatures,
+        satellite_tiles: Tensor,
+        tile_validity: Optional[Tensor] = None,
+    ) -> LocalizerOutput:
+        """Localize one encoded query against one or more 3x3 candidates."""
+
+        satellite_tokens, satellite_grid = self.extract_satellite_grid(satellite_tiles)
+        candidate_count = satellite_tiles.shape[0]
+        query_tokens = query.patch_tokens
+        if query_tokens.shape[0] == 1 and candidate_count > 1:
+            query_tokens = query_tokens.expand(candidate_count, -1, -1)
+        elif query_tokens.shape[0] != candidate_count:
+            raise ValueError("Query and candidate batch sizes are incompatible")
+        satellite_valid_mask = (
+            self.expand_tile_validity(tile_validity, satellite_grid)
+            if tile_validity is not None
+            else None
+        )
+        return self.localizer(
+            query_tokens,
+            satellite_tokens,
+            query.grid_size,
+            satellite_grid,
+            satellite_valid_mask,
+        )
+
     @staticmethod
     def expand_tile_validity(
         tile_validity: Tensor, satellite_grid: tuple[int, int]
@@ -107,17 +135,5 @@ class GlobalToLocalModel(nn.Module):
     ) -> GlobalToLocalOutput:
         query_descriptor, query = self.encode_query(query_images)
         satellite_descriptor, _ = self.encode_satellite(positive_satellite_tiles)
-        satellite_tokens, satellite_grid = self.extract_satellite_grid(satellite_tiles)
-        satellite_valid_mask = (
-            self.expand_tile_validity(tile_validity, satellite_grid)
-            if tile_validity is not None
-            else None
-        )
-        localization = self.localizer(
-            query.patch_tokens,
-            satellite_tokens,
-            query.grid_size,
-            satellite_grid,
-            satellite_valid_mask,
-        )
+        localization = self.localize_candidates(query, satellite_tiles, tile_validity)
         return GlobalToLocalOutput(query_descriptor, satellite_descriptor, localization)

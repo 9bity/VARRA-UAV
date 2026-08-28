@@ -43,6 +43,25 @@ class QueryRecord:
     heading_sin: float
 
 
+@dataclass(frozen=True)
+class MapRecord:
+    map_id: str
+    city: str
+    width: int
+    height: int
+    center_latitude: float
+    center_longitude: float
+    lat_per_pixel: float
+    lng_per_pixel: float
+    meters_per_pixel_x: float
+    meters_per_pixel_y: float
+
+    def pixel_to_geo(self, x: float, y: float) -> tuple[float, float]:
+        longitude = (x - self.width / 2.0) * self.lng_per_pixel + self.center_longitude
+        latitude = self.center_latitude - (y - self.height / 2.0) * self.lat_per_pixel
+        return latitude, longitude
+
+
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open("r", newline="", encoding="utf-8-sig") as handle:
         return list(csv.DictReader(handle))
@@ -57,12 +76,35 @@ class UAV90KCatalog:
         if not metadata.is_dir():
             raise FileNotFoundError(metadata)
 
+        self.maps = self._load_maps(metadata / "maps.csv")
+        self.maps_by_city = {item.city: item for item in self.maps.values()}
         self.tiles = self._load_tiles(metadata / "satellite_tiles.csv")
         self.neighborhoods = self._load_neighborhoods(metadata / "neighborhoods.csv")
         self.queries = self._load_queries(metadata / "samples.csv")
         self._queries_by_split: dict[str, list[QueryRecord]] = {}
         for query in self.queries:
             self._queries_by_split.setdefault(query.split, []).append(query)
+
+    @staticmethod
+    def _load_maps(path: Path) -> dict[str, MapRecord]:
+        maps: dict[str, MapRecord] = {}
+        for row in _read_csv(path):
+            item = MapRecord(
+                map_id=row["map_id"],
+                city=row["city"],
+                width=int(row["width"]),
+                height=int(row["height"]),
+                center_latitude=float(row["center_latitude"]),
+                center_longitude=float(row["center_longitude"]),
+                lat_per_pixel=float(row["lat_per_pixel"]),
+                lng_per_pixel=float(row["lng_per_pixel"]),
+                meters_per_pixel_x=float(row["meters_per_pixel_x"]),
+                meters_per_pixel_y=float(row["meters_per_pixel_y"]),
+            )
+            if item.map_id in maps:
+                raise ValueError(f"Duplicate map: {item.map_id}")
+            maps[item.map_id] = item
+        return maps
 
     def _load_tiles(self, path: Path) -> dict[str, SatelliteTile]:
         tiles: dict[str, SatelliteTile] = {}

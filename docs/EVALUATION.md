@@ -21,6 +21,12 @@ The four UAV90K maps have 0.25 meters per pixel in both axes. Evaluation still
 reads or passes the map scale explicitly so the implementation remains correct
 if maps with a different ground sampling distance are introduced later.
 
+Pixel coordinate systems are local to each city. When the global retriever
+selects the wrong city, the evaluator therefore uses the predicted and target
+latitude/longitude to compute great-circle distance; it never compares the two
+cities' coincident pixel coordinates. Same-city errors retain the original
+map-scale computation.
+
 The metric implementation is centralized in `uavgeo.metrics`. Training,
 validation, ablation, and final test scripts must call this implementation
 instead of maintaining separate formulas.

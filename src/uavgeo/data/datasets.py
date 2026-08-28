@@ -61,6 +61,9 @@ class UAVQueryDataset(Dataset[dict[str, Any]]):
             "sample_id": record.sample_id,
             "image": image,
             "global_xy": torch.tensor((record.global_x, record.global_y), dtype=torch.float32),
+            "latitude_longitude": torch.tensor(
+                (record.latitude, record.longitude), dtype=torch.float64
+            ),
             "heading": torch.tensor((record.heading_cos, record.heading_sin), dtype=torch.float32),
             "gt_tile_id": record.gt_tile_id,
             "city": record.city,
@@ -90,6 +93,42 @@ class SatelliteTileDataset(Dataset[dict[str, Any]]):
         }
 
 
+class SatelliteCandidateLoader:
+    """Load a center tile's padded 3x3 neighborhood for local registration."""
+
+    def __init__(
+        self,
+        catalog: UAV90KCatalog,
+        transform: Optional[ImageTransform] = None,
+        tile_size: int = 256,
+    ) -> None:
+        self.catalog = catalog
+        self.transform = transform or DINOImageTransform(252)
+        self.tile_size = tile_size
+
+    def load(self, center_tile_id: str) -> tuple[Tensor, Tensor, Tensor]:
+        center = self.catalog.tiles[center_tile_id]
+        black_tile = Image.new("RGB", (self.tile_size, self.tile_size))
+        tensors: list[Tensor] = []
+        validity = torch.zeros((3, 3), dtype=torch.bool)
+        for index, tile in enumerate(self.catalog.neighborhood(center_tile_id)):
+            grid_row, grid_col = divmod(index, 3)
+            if tile is None:
+                image = black_tile
+            else:
+                image = load_rgb(tile.image_path)
+                validity[grid_row, grid_col] = True
+            tensors.append(self.transform(image))
+        origin = torch.tensor(
+            (
+                (center.col - 1) * self.tile_size,
+                (center.row - 1) * self.tile_size,
+            ),
+            dtype=torch.float32,
+        )
+        return torch.stack(tensors, dim=0), validity, origin
+
+
 class LocalRegistrationDataset(Dataset[dict[str, Any]]):
     """Return a UVP and a positive 3x3 candidate with continuous local targets.
 
@@ -111,6 +150,9 @@ class LocalRegistrationDataset(Dataset[dict[str, Any]]):
         self.query_transform = query_transform or DINOImageTransform(252)
         self.tile_transform = tile_transform or DINOImageTransform(252)
         self.tile_size = tile_size
+        self.candidate_loader = SatelliteCandidateLoader(
+            catalog, self.tile_transform, tile_size
+        )
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -126,27 +168,18 @@ class LocalRegistrationDataset(Dataset[dict[str, Any]]):
         return candidates[choice]
 
     def _load_satellite_grid(self, center_tile_id: str) -> tuple[Tensor, Tensor]:
-        black_tile = Image.new("RGB", (self.tile_size, self.tile_size))
-        tensors: list[Tensor] = []
-        validity = torch.zeros((3, 3), dtype=torch.bool)
-        for index, tile in enumerate(self.catalog.neighborhood(center_tile_id)):
-            grid_row, grid_col = divmod(index, 3)
-            if tile is None:
-                image = black_tile
-            else:
-                image = load_rgb(tile.image_path)
-                validity[grid_row, grid_col] = True
-            tensors.append(self.tile_transform(image))
-        return torch.stack(tensors, dim=0), validity
+        tiles, validity, _ = self.candidate_loader.load(center_tile_id)
+        return tiles, validity
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         record = self.records[index]
         positive_tile = self.catalog.tiles[record.gt_tile_id]
         center_tile_id = self._candidate_center(record)
-        center = self.catalog.tiles[center_tile_id]
-        satellite_grid, tile_validity = self._load_satellite_grid(center_tile_id)
-        mosaic_origin_x = (center.col - 1) * self.tile_size
-        mosaic_origin_y = (center.row - 1) * self.tile_size
+        satellite_grid, tile_validity, mosaic_origin = self.candidate_loader.load(
+            center_tile_id
+        )
+        mosaic_origin_x = float(mosaic_origin[0])
+        mosaic_origin_y = float(mosaic_origin[1])
         target_x = (record.global_x - mosaic_origin_x) / (3 * self.tile_size)
         target_y = (record.global_y - mosaic_origin_y) / (3 * self.tile_size)
         if not (0.0 <= target_x <= 1.0 and 0.0 <= target_y <= 1.0):

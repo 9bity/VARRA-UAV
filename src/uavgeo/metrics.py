@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Sequence, Union
+from typing import Optional, Sequence, Union
 
 import torch
 from torch import Tensor
@@ -65,6 +65,26 @@ def heading_errors_degrees(
     return torch.rad2deg(torch.acos(cosine.clamp(-1.0, 1.0)))
 
 
+def haversine_errors_meters(
+    predicted_latlon: Union[Tensor, Sequence[Sequence[float]]],
+    target_latlon: Union[Tensor, Sequence[Sequence[float]]],
+) -> Tensor:
+    """Return great-circle distances for `[latitude, longitude]` pairs."""
+
+    predicted = torch.deg2rad(_as_float_tensor(predicted_latlon))
+    target = torch.deg2rad(_as_float_tensor(target_latlon))
+    if predicted.ndim != 2 or predicted.shape[1] != 2 or target.shape != predicted.shape:
+        raise ValueError("Latitude/longitude tensors must have matching shape [N,2]")
+    delta = predicted - target
+    a = (
+        torch.sin(delta[:, 0] / 2).square()
+        + torch.cos(predicted[:, 0])
+        * torch.cos(target[:, 0])
+        * torch.sin(delta[:, 1] / 2).square()
+    )
+    return 2 * 6_371_008.8 * torch.asin(torch.sqrt(a.clamp(0.0, 1.0)))
+
+
 def compute_bearing_metrics(
     predicted_tile_ids: Sequence[str],
     target_tile_ids: Sequence[str],
@@ -77,6 +97,9 @@ def compute_bearing_metrics(
         0.25,
         0.25,
     ),
+    predicted_cities: Optional[Sequence[str]] = None,
+    predicted_latlon: Optional[Union[Tensor, Sequence[Sequence[float]]]] = None,
+    target_latlon: Optional[Union[Tensor, Sequence[Sequence[float]]]] = None,
 ) -> BearingMetrics:
     """Compute the five primary metrics using Bearing-UAV aggregation behavior.
 
@@ -93,6 +116,20 @@ def compute_bearing_metrics(
         raise ValueError("Tile ID and city collections must have the same length")
 
     position_errors = position_errors_meters(predicted_xy, target_xy, meters_per_pixel_xy)
+    if predicted_cities is not None:
+        if len(predicted_cities) != sample_count:
+            raise ValueError("predicted_cities must match the sample count")
+        cross_city = torch.tensor(
+            [predicted != target for predicted, target in zip(predicted_cities, cities)],
+            dtype=torch.bool,
+        )
+        if cross_city.any():
+            if predicted_latlon is None or target_latlon is None:
+                raise ValueError("Cross-city evaluation requires latitude/longitude")
+            geographic_errors = haversine_errors_meters(
+                predicted_latlon, target_latlon
+            )
+            position_errors[cross_city] = geographic_errors[cross_city]
     heading_errors = heading_errors_degrees(predicted_heading, target_heading)
     if len(position_errors) != sample_count or len(heading_errors) != sample_count:
         raise ValueError("Prediction tensors do not match tile ID collection length")

@@ -18,3 +18,25 @@ The initial trainable model framework is documented in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). It includes typed UAV90K data
 access, a shared frozen DINOv2 wrapper, multi-positive global retrieval, VARRA
 local correspondence, and continuous position/heading/confidence heads.
+
+## Stage-one training
+
+Install the package in the selected CUDA environment, then start the initial
+positive-candidate training stage:
+
+```bash
+pip install -e .
+python scripts/train.py \
+  --dataset /root/autodl-tmp/UAV/UAV90K \
+  --output-dir /root/autodl-tmp/UAV/runs/stage1 \
+  --batch-size 2
+```
+
+The trainer uses a frozen DINOv2 backbone by default and provides validation,
+mixed precision, gradient clipping, cosine learning-rate decay, JSONL history,
+and atomic latest/best checkpoints. Retrieval positives are grouped by
+`gt_tile_id`, so repeated tiles in one batch are not treated as negatives.
+
+Candidate-confidence loss is deliberately disabled in stage one because the
+current dataset supplies positive 3x3 candidates only. It will be enabled after
+retrieval-mined negative candidates are added.

@@ -154,6 +154,8 @@ class LocalRegistrationDataset(Dataset[dict[str, Any]]):
 
         return {
             "sample_id": record.sample_id,
+            "gt_tile_id": record.gt_tile_id,
+            "city": record.city,
             "query_image": self.query_transform(load_rgb(record.uav_path)),
             "positive_satellite_tile": self.tile_transform(
                 load_rgb(positive_tile.image_path)

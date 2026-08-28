@@ -62,6 +62,12 @@ shortcut that the target is always in the central tile.
 Negative and retrieval-mined candidates will be introduced in the training
 pipeline after the model-level tensor contracts are verified.
 
+The stage-one trainer therefore sets the candidate-confidence loss weight to
+zero. Position, heatmap, and heading supervision use positive 3x3 candidates,
+while retrieval uses in-batch satellite negatives and a tile-ID-derived
+multi-positive mask. Candidate confidence must not be enabled until negative
+candidates are present.
+
 The provided loss module combines multi-positive contrastive retrieval,
 continuous position regression, continuous-point heatmap likelihood, circular
 heading similarity, and optional candidate-confidence supervision. The

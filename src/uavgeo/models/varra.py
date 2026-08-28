@@ -25,7 +25,9 @@ class VARRAOutput:
     geometric_heading: Tensor
 
 
-def normalized_grid(height: int, width: int, device: torch.device, dtype: torch.dtype) -> Tensor:
+def normalized_grid(
+    height: int, width: int, device: torch.device, dtype: torch.dtype
+) -> Tensor:
     y = torch.linspace(-1.0, 1.0, height, device=device, dtype=dtype)
     x = torch.linspace(-1.0, 1.0, width, device=device, dtype=dtype)
     grid_y, grid_x = torch.meshgrid(y, x, indexing="ij")
@@ -35,30 +37,49 @@ def normalized_grid(height: int, width: int, device: torch.device, dtype: torch.
 def weighted_similarity_transform(source: Tensor, target: Tensor, weights: Tensor) -> tuple[Tensor, Tensor, Tensor]:
     """Estimate a differentiable 2D scale-rotation-translation transform."""
 
-    eps = torch.finfo(source.dtype).eps
-    weights = weights.clamp_min(0.0)
-    weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(eps)
-    source_mean = (weights.unsqueeze(-1) * source).sum(dim=1)
-    target_mean = (weights.unsqueeze(-1) * target).sum(dim=1)
-    source_centered = source - source_mean.unsqueeze(1)
-    target_centered = target - target_mean.unsqueeze(1)
-    covariance = torch.einsum(
-        "bn,bni,bnj->bij", weights, source_centered, target_centered
+    # CUDA SVD is unsupported or numerically fragile for fp16/bf16 on several
+    # PyTorch/CUDA combinations. Keep this small geometric solve in fp32 while
+    # allowing the surrounding attention operations to use autocast.
+    output_dtype = source.dtype
+    solve_dtype = (
+        torch.float32
+        if source.dtype in (torch.float16, torch.bfloat16)
+        else source.dtype
     )
-    u, singular_values, vh = torch.linalg.svd(covariance, full_matrices=False)
-    correction = torch.ones((source.shape[0], 2), device=source.device, dtype=source.dtype)
-    correction[:, -1] = torch.where(
-        torch.det(vh.transpose(-1, -2) @ u.transpose(-1, -2)) < 0,
-        -1.0,
-        1.0,
+    with torch.autocast(device_type=source.device.type, enabled=False):
+        source = source.to(solve_dtype)
+        target = target.to(solve_dtype)
+        weights = weights.to(solve_dtype)
+        eps = torch.finfo(solve_dtype).eps
+        weights = weights.clamp_min(0.0)
+        weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(eps)
+        source_mean = (weights.unsqueeze(-1) * source).sum(dim=1)
+        target_mean = (weights.unsqueeze(-1) * target).sum(dim=1)
+        source_centered = source - source_mean.unsqueeze(1)
+        target_centered = target - target_mean.unsqueeze(1)
+        covariance = torch.einsum(
+            "bn,bni,bnj->bij", weights, source_centered, target_centered
+        )
+        u, singular_values, vh = torch.linalg.svd(covariance, full_matrices=False)
+        correction = torch.ones(
+            (source.shape[0], 2), device=source.device, dtype=source.dtype
+        )
+        correction[:, -1] = torch.where(
+            torch.det(vh.transpose(-1, -2) @ u.transpose(-1, -2)) < 0,
+            -1.0,
+            1.0,
+        )
+        diagonal = torch.diag_embed(correction)
+        rotation = vh.transpose(-1, -2) @ diagonal @ u.transpose(-1, -2)
+        variance = (weights.unsqueeze(-1) * source_centered.square()).sum(dim=(1, 2))
+        scale = (singular_values * correction).sum(dim=-1) / variance.clamp_min(eps)
+        transformed_mean = torch.einsum("bij,bj->bi", rotation, source_mean)
+        translation = target_mean - scale.unsqueeze(-1) * transformed_mean
+    return (
+        rotation.to(output_dtype),
+        translation.to(output_dtype),
+        scale.to(output_dtype),
     )
-    diagonal = torch.diag_embed(correction)
-    rotation = vh.transpose(-1, -2) @ diagonal @ u.transpose(-1, -2)
-    variance = (weights.unsqueeze(-1) * source_centered.square()).sum(dim=(1, 2))
-    scale = (singular_values * correction).sum(dim=-1) / variance.clamp_min(eps)
-    transformed_mean = torch.einsum("bij,bj->bi", rotation, source_mean)
-    translation = target_mean - scale.unsqueeze(-1) * transformed_mean
-    return rotation, translation, scale
 
 
 class VARRA(nn.Module):

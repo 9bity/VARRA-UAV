@@ -11,6 +11,7 @@ from uavgeo.losses import GlobalToLocalLoss
 from uavgeo.models.backbone import DINOv2Backbone
 from uavgeo.models.system import GlobalToLocalModel
 from uavgeo.models.varra import weighted_similarity_transform
+from uavgeo.training import build_multi_positive_mask
 
 
 class FakeDINO(nn.Module):
@@ -28,6 +29,16 @@ class FakeDINO(nn.Module):
 
 
 class GlobalToLocalSmokeTest(unittest.TestCase):
+    def test_multi_positive_mask(self) -> None:
+        mask = build_multi_positive_mask(
+            ["tile_a", "tile_a", "tile_b"],
+            ["tile_a", "tile_b", "tile_a"],
+        )
+        expected = torch.tensor(
+            [[True, False, True], [True, False, True], [False, True, False]]
+        )
+        self.assertTrue(torch.equal(mask, expected))
+
     def test_weighted_similarity_transform(self) -> None:
         source = torch.tensor(
             [[[-1.0, -1.0], [1.0, -1.0], [-1.0, 1.0], [1.0, 1.0]]]
@@ -52,6 +63,14 @@ class GlobalToLocalSmokeTest(unittest.TestCase):
             torch.allclose(estimated_translation, expected_translation, atol=1e-5)
         )
         self.assertTrue(torch.allclose(estimated_scale, expected_scale, atol=1e-5))
+
+        half_rotation, half_translation, half_scale = weighted_similarity_transform(
+            source.half(), target.half(), torch.ones(1, 4, dtype=torch.float16)
+        )
+        self.assertEqual(half_rotation.dtype, torch.float16)
+        self.assertTrue(torch.isfinite(half_rotation).all())
+        self.assertTrue(torch.isfinite(half_translation).all())
+        self.assertTrue(torch.isfinite(half_scale).all())
 
     def test_forward_and_backward(self) -> None:
         backbone = DINOv2Backbone(

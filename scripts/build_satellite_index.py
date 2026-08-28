@@ -10,7 +10,7 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader
 
-from uavgeo.checkpoints import load_trained_model
+from uavgeo.checkpoints import file_sha256, load_trained_model
 from uavgeo.data.catalog import UAV90KCatalog
 from uavgeo.data.datasets import SatelliteTileDataset
 from uavgeo.models.retrieval import SatelliteFeatureIndex
@@ -88,6 +88,7 @@ def main() -> None:
         args.output,
         metadata={
             "checkpoint": str(args.checkpoint.resolve()),
+            "checkpoint_sha256": file_sha256(args.checkpoint),
             "checkpoint_epoch": int(checkpoint["epoch"]),
             "dataset": str(args.dataset.resolve()),
             "descriptor_dim": int(descriptors.shape[1]),

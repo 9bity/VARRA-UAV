@@ -109,7 +109,7 @@ class SatelliteFeatureIndex:
     def load(
         cls, path: Union[str, Path]
     ) -> tuple["SatelliteFeatureIndex", dict[str, Any]]:
-        payload = torch.load(Path(path), map_location="cpu")
+        payload = torch.load(Path(path), map_location="cpu", weights_only=False)
         if payload.get("format_version") != cls.FORMAT_VERSION:
             raise ValueError("Unsupported satellite-index format version")
         return cls(payload["tile_ids"], payload["descriptors"]), payload.get("metadata", {})

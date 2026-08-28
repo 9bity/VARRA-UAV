@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, Union
 
 import torch
 
 from .models.system import GlobalToLocalModel
+
+
+def file_sha256(path: Union[str, Path]) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def load_trained_model(
@@ -17,7 +26,9 @@ def load_trained_model(
 ) -> tuple[GlobalToLocalModel, dict[str, Any]]:
     """Recreate the architecture recorded by the trainer and load its weights."""
 
-    checkpoint = torch.load(Path(checkpoint_path), map_location=device)
+    checkpoint = torch.load(
+        Path(checkpoint_path), map_location=device, weights_only=False
+    )
     arguments = checkpoint.get("args")
     if not isinstance(arguments, dict):
         raise ValueError("Checkpoint does not contain trainer arguments")

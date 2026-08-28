@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from uavgeo.checkpoints import load_trained_model
+from uavgeo.checkpoints import file_sha256, load_trained_model
 from uavgeo.data.catalog import UAV90KCatalog
 from uavgeo.data.datasets import UAVQueryDataset
 from uavgeo.mining import write_negative_manifest
@@ -109,6 +109,8 @@ def main() -> None:
     feature_index, metadata = SatelliteFeatureIndex.load(args.index)
     if metadata.get("checkpoint_epoch") != int(checkpoint["epoch"]):
         raise ValueError("Satellite index and model checkpoint epochs do not match")
+    if metadata.get("checkpoint_sha256") != file_sha256(args.checkpoint):
+        raise ValueError("Satellite index was built from a different checkpoint")
     if args.search_k > len(feature_index.tile_ids):
         raise ValueError("search-k exceeds the satellite database size")
     catalog = UAV90KCatalog(args.dataset)

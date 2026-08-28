@@ -181,10 +181,16 @@ def train_epoch(
     for step, batch in enumerate(limited_batches(loader, limit), start=1):
         optimizer.zero_grad(set_to_none=True)
         losses = batch_losses(model, criterion, batch, device, amp_enabled)
+        if not torch.isfinite(losses.total):
+            raise FloatingPointError(
+                f"Non-finite training loss at step {step}: {float(losses.total)}"
+            )
         scaler.scale(losses.total).backward()
         scaler.unscale_(optimizer)
         if grad_clip > 0:
-            clip_grad_norm_(trainable_parameters(model), grad_clip)
+            clip_grad_norm_(
+                trainable_parameters(model), grad_clip, error_if_nonfinite=True
+            )
         scaler.step(optimizer)
         scaler.update()
 
@@ -281,7 +287,9 @@ def main() -> None:
         num_heads=args.num_heads,
     ).to(device)
     if args.init_checkpoint is not None:
-        initial = torch.load(args.init_checkpoint, map_location=device)
+        initial = torch.load(
+            args.init_checkpoint, map_location=device, weights_only=False
+        )
         model.load_state_dict(initial["model"])
         print(f"initialized model weights from {args.init_checkpoint}")
     criterion = GlobalToLocalLoss(confidence_weight=args.confidence_weight)
@@ -296,7 +304,9 @@ def main() -> None:
     best_val = math.inf
 
     if args.resume is not None:
-        checkpoint = torch.load(args.resume, map_location=device)
+        checkpoint = torch.load(
+            args.resume, map_location=device, weights_only=False
+        )
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])

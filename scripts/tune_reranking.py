@@ -80,6 +80,7 @@ def expected_cache_metadata(
     return {
         "split": args.split,
         "max_top_k": args.max_top_k,
+        "candidate_batch_size": args.candidate_batch_size,
         "checkpoint_sha256": file_sha256(args.checkpoint),
         "index_sha256": file_sha256(args.index),
         "dataset_fingerprint": dataset_sha256,

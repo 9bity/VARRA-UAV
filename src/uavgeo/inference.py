@@ -65,7 +65,10 @@ class GlobalToLocalInference:
         self.confidence_transform = confidence_transform
         self.candidate_batch_size = candidate_batch_size
         self.amp_enabled = bool(amp_enabled and device.type == "cuda")
-        self.candidate_loader = SatelliteCandidateLoader(catalog)
+        # The database contains only 1,024 transformed tiles, while Top-K
+        # neighborhoods reuse them many times. Cache tiles for inference to
+        # remove redundant JPEG decoding without changing model inputs.
+        self.candidate_loader = SatelliteCandidateLoader(catalog, cache_tiles=True)
 
     def _autocast(self):
         if self.amp_enabled:

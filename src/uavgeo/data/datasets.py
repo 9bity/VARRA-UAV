@@ -101,24 +101,37 @@ class SatelliteCandidateLoader:
         catalog: UAV90KCatalog,
         transform: Optional[ImageTransform] = None,
         tile_size: int = 256,
+        cache_tiles: bool = False,
     ) -> None:
         self.catalog = catalog
         self.transform = transform or DINOImageTransform(252)
         self.tile_size = tile_size
+        self.cache_tiles = cache_tiles
+        self._tile_cache: dict[str, Tensor] = {}
+        self._black_tensor = self.transform(
+            Image.new("RGB", (self.tile_size, self.tile_size))
+        )
+
+    def _tile_tensor(self, tile_id: str) -> Tensor:
+        if tile_id in self._tile_cache:
+            return self._tile_cache[tile_id]
+        tensor = self.transform(load_rgb(self.catalog.tiles[tile_id].image_path))
+        if self.cache_tiles:
+            self._tile_cache[tile_id] = tensor
+        return tensor
 
     def load(self, center_tile_id: str) -> tuple[Tensor, Tensor, Tensor]:
         center = self.catalog.tiles[center_tile_id]
-        black_tile = Image.new("RGB", (self.tile_size, self.tile_size))
         tensors: list[Tensor] = []
         validity = torch.zeros((3, 3), dtype=torch.bool)
         for index, tile in enumerate(self.catalog.neighborhood(center_tile_id)):
             grid_row, grid_col = divmod(index, 3)
             if tile is None:
-                image = black_tile
+                tensor = self._black_tensor
             else:
-                image = load_rgb(tile.image_path)
+                tensor = self._tile_tensor(tile.tile_id)
                 validity[grid_row, grid_col] = True
-            tensors.append(self.transform(image))
+            tensors.append(tensor)
         origin = torch.tensor(
             (
                 (center.col - 1) * self.tile_size,

@@ -14,6 +14,7 @@ from uavgeo.data.datasets import (
     DINOImageTransform,
     LocalRegistrationDataset,
     SatelliteCandidateLoader,
+    SingleStagePairDataset,
     UAVQueryDataset,
 )
 from uavgeo.inference import GlobalToLocalInference
@@ -97,6 +98,31 @@ class UAV90KDataTest(unittest.TestCase):
         sample = dataset[0]
         self.assertEqual(float(sample["candidate_label"]), 0.0)
         self.assertTrue(torch.equal(sample["target_xy"], torch.tensor([0.5, 0.5])))
+
+    @unittest.skipUnless(os.environ.get("UAV90K_ROOT"), "UAV90K_ROOT is not set")
+    def test_single_stage_pair_has_positive_and_negative_candidates(self) -> None:
+        catalog = UAV90KCatalog(Path(os.environ["UAV90K_ROOT"]))
+        records = catalog.queries_for_split("val")
+        candidates: dict[str, list[str]] = {}
+        tiles = tuple(catalog.tiles.values())
+        for record in records:
+            negative = next(
+                tile.tile_id for tile in tiles if tile.city != record.city
+            )
+            candidates[record.sample_id] = [negative]
+        dataset = SingleStagePairDataset(
+            catalog,
+            "val",
+            candidates,
+            query_transform=DINOImageTransform(28),
+            tile_transform=DINOImageTransform(28),
+        )
+        sample = dataset[0]
+        self.assertEqual(tuple(sample["positive_satellite_tiles"].shape), (9, 3, 28, 28))
+        self.assertEqual(tuple(sample["negative_satellite_tiles"].shape), (9, 3, 28, 28))
+        self.assertEqual(tuple(sample["positive_tile_validity"].shape), (3, 3))
+        self.assertEqual(tuple(sample["negative_tile_validity"].shape), (3, 3))
+        self.assertTrue(((sample["target_xy"] >= 0) & (sample["target_xy"] <= 1)).all())
 
 
 if __name__ == "__main__":

@@ -1,82 +1,75 @@
-# UAV
+# UAV single-stage
 
-Research code for global UAV-to-satellite localization and heading estimation
-using Bearing-UAV-90K images and a DINOv2-based coarse-to-fine model.
+Single-UVP global localization and heading estimation on UAV90K. The model
+keeps the original coarse-to-fine design: DINOv2 global satellite retrieval,
+3x3 candidate expansion, and VARRA cross-view local registration. Retrieval,
+position, heading, and candidate quality are now learned in one continuous
+training run.
 
-The project is being built in two stages:
+The previous two-stage implementation is preserved separately in
+`D:\paper\UAV`. This directory contains the independent single-stage redesign.
 
-1. Convert the original Bearing-UAV-90K layout into `UAV90K`, with one UVP as
-   each query and a deduplicated global satellite-tile database.
-2. Build a global retrieval and local 3x3 registration network on top of frozen
-   DINOv2 features.
+## Pipeline
 
-Dataset images are intentionally excluded from Git. See
-[`docs/UAV90K.md`](docs/UAV90K.md) for the dataset schema and reconstruction
-instructions.
+```text
+offline satellite tiles -> final learned descriptors -> satellite index
+                                                       ^
+single UVP -> DINOv2 -> cross-view retrieval ----------+
+     |
+     +-> Top-K centers -> 3x3 expansion -> VARRA -> position + heading + quality
+```
 
-The initial trainable model framework is documented in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). It includes typed UAV90K data
-access, a shared frozen DINOv2 wrapper, multi-positive global retrieval, VARRA
-local correspondence, and continuous position/heading/confidence heads.
+Training uses one positive and one fixed DINOv2 hard-negative 3x3 candidate per
+query. Fixed negatives are prepared with the public frozen DINOv2 backbone,
+not with a previously trained UAV model. Preparing them is deterministic data
+preprocessing and does not create a model checkpoint.
 
-## Stage-one training
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for tensor flow and objectives,
+[docs/UAV90K.md](docs/UAV90K.md) for the dataset format, and
+[docs/EVALUATION.md](docs/EVALUATION.md) for the five-metric protocol.
 
-Install the package in the selected CUDA environment, then start the initial
-positive-candidate training stage:
+## One-run training
 
 ```bash
-pip install -e .
-DINOV2_REPO=/root/autodl-tmp/UAV/pretrained/torch_hub/facebookresearch_dinov2_main \
-DINOV2_WEIGHTS=/root/autodl-tmp/UAV/pretrained/dinov2_vitb14_pretrain.pth \
+python -m pip install -e .
+
+python scripts/prepare_dino_negatives.py \
+  --dataset /path/to/UAV90K \
+  --output /path/to/fixed_dino_negatives.csv \
+  --splits train val \
+  --search-k 200 \
+  --negatives-per-query 8
+
 python scripts/train.py \
-  --dataset /root/autodl-tmp/UAV/UAV90K \
-  --output-dir /root/autodl-tmp/UAV/runs/stage1 \
+  --dataset /path/to/UAV90K \
+  --negative-manifest /path/to/fixed_dino_negatives.csv \
+  --output-dir /path/to/run \
+  --epochs 30 \
   --batch-size 2
 ```
 
-The trainer uses a frozen DINOv2 backbone by default and provides validation,
-mixed precision, gradient clipping, cosine learning-rate decay, JSONL history,
-and atomic latest/best checkpoints. Retrieval positives are grouped by
-`gt_tile_id`, so repeated tiles in one batch are not treated as negatives.
+`train.py` starts from DINOv2 plus randomly initialized task heads and performs
+one optimizer/scheduler run. `--resume` only continues an interrupted run; it
+does not define a second training stage.
 
-Candidate-confidence loss is deliberately disabled in stage one because the
-current dataset supplies positive 3x3 candidates only. It will be enabled after
-retrieval-mined negative candidates are added.
-
-The fixed five-metric evaluation protocol is defined in
-[`docs/EVALUATION.md`](docs/EVALUATION.md) and implemented by
-`uavgeo.metrics`.
-
-After stage one, build the satellite index, mine retrieval hard negatives, and
-fine-tune candidate confidence:
+After training, build the final satellite index and evaluate:
 
 ```bash
 python scripts/build_satellite_index.py \
-  --dataset /root/autodl-tmp/UAV/UAV90K \
-  --checkpoint /root/autodl-tmp/UAV/runs/stage1/best.pt \
-  --output /root/autodl-tmp/UAV/UAV90K/features/index/stage1.pt
+  --dataset /path/to/UAV90K \
+  --checkpoint /path/to/run/best.pt \
+  --output /path/to/run/satellite_index.pt
 
-python scripts/mine_hard_negatives.py \
-  --dataset /root/autodl-tmp/UAV/UAV90K \
-  --checkpoint /root/autodl-tmp/UAV/runs/stage1/best.pt \
-  --index /root/autodl-tmp/UAV/UAV90K/features/index/stage1.pt \
-  --output /root/autodl-tmp/UAV/UAV90K/features/index/hard_negatives.csv
-
-python scripts/train.py \
-  --dataset /root/autodl-tmp/UAV/UAV90K \
-  --output-dir /root/autodl-tmp/UAV/runs/stage2 \
-  --init-checkpoint /root/autodl-tmp/UAV/runs/stage1/best.pt \
-  --negative-manifest /root/autodl-tmp/UAV/UAV90K/features/index/hard_negatives.csv \
-  --negative-probability 0.5 \
+python scripts/evaluate.py \
+  --dataset /path/to/UAV90K \
+  --checkpoint /path/to/run/best.pt \
+  --index /path/to/run/satellite_index.pt \
+  --output-dir /path/to/run/eval \
+  --split test \
+  --top-k 5 \
   --confidence-weight 0.5 \
-  --batch-size 2
+  --mle-protocol bearing-compatible
 ```
 
-`--resume` restores an interrupted run including optimizer, scheduler, scaler,
-data-loader generator, and random states. `--init-checkpoint` starts a new
-training stage from model weights only.
-
-For an exact seed-42 two-stage recipe, pinned dependencies, dataset/DINO
-fingerprints, deterministic settings, and expected metrics, see
-[`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md). The complete reference
-pipeline is available as `scripts/run_reference_pipeline.sh`.
+No training has been run for this redesign yet, so the former two-stage metrics
+must not be treated as results of this code.

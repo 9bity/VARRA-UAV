@@ -1,69 +1,66 @@
 # Reproducibility protocol
 
-The reference experiment uses Python 3.10.8, PyTorch 2.1.2+cu118, CUDA 11.8,
-cuDNN 8.7.0, NumPy 1.26.4, Pillow 10.3.0, and one RTX 4090. Install the exact
-Python packages with:
-
-```bash
-python -m pip install -r requirements-repro.txt
-python -m pip install -e .
-```
-
-Use the official `dinov2_vitb14_pretrain.pth` file. The reference SHA256 is:
-
-```text
-0b8b82f85de91b424aded121c7e1dcc2b7bc6d0adeea651bf73a13307fad8c73
-```
-
-Build UAV90K with the repository conversion script. It performs a per-city
-85/5/10 shuffle with seed 42, producing 76,500 train, 4,500 validation, and
-9,000 test queries. Verify the resulting metadata and split fingerprint before
-training:
-
-```bash
-PYTHONPATH=src python scripts/fingerprint_dataset.py --dataset /path/to/UAV90K
-```
-
-The reference UAV90K metadata fingerprint is:
+The single-stage redesign retains the fixed UAV90K split and environment
+fingerprints of the preserved baseline. The reference metadata fingerprint is:
 
 ```text
 fdaf3f74fed5e8fa953152a7d4c7bfbd02f0becdf1ff89a99dace52c3ad4001a
 ```
 
-Training defaults to seed 42 and deterministic mode. Every run writes
-`config.json` and `reproducibility.json`, and embeds the same manifest in each
-new checkpoint. Evaluation refuses a checkpoint/dataset fingerprint mismatch.
-Keep batch size, worker count, AMP mode, model version, and all command-line
-arguments identical to the reference run.
+The official `dinov2_vitb14_pretrain.pth` SHA256 is:
 
-Exact checkpoint bytes are expected only on an identical software and hardware
-stack. A different CUDA, cuDNN, PyTorch, or GPU version can introduce small
-floating-point changes. Report mean and standard deviation over three seeds
-(42, 123, 3407) for publication-grade reproducibility; use seed 42 for the
-single reference result.
+```text
+0b8b82f85de91b424aded121c7e1dcc2b7bc6d0adeea651bf73a13307fad8c73
+```
 
-The primary MLE protocol is `bearing-compatible`: same-city pixel errors are
-converted with the map scale and macro-averaged across cities; cross-city
-predictions remain LSR failures and are reported separately. The stricter
-global number is available with `--mle-protocol global-geodesic`. Always state
-the selected protocol with reported results.
+## Deterministic preparation
 
-The seed-42 reference test result is:
-
-| Recall@1 | LSR@15 | HSR@15 | MLE | MHE |
-|---:|---:|---:|---:|---:|
-| 72.01% | 82.73% | 70.16% | 14.10 m | 14.31 deg |
-
-On the identical RTX 4090 reference stack, deterministic reruns should be
-effectively identical. On a different supported CUDA GPU/software stack,
-differences within 0.5 percentage points for success rates and within 0.5 m or
-0.5 degrees for mean errors are considered a successful reproduction. Larger
-differences require checking the recorded dataset, DINO weight, code revision,
-and runtime manifests before interpreting model variance.
-
-For the exact two-stage command sequence, export `UAV90K_ROOT`,
-`DINOV2_REPO`, and `DINOV2_WEIGHTS`, then run:
+`prepare_dino_negatives.py` uses a frozen DINOv2 backbone, ordered datasets,
+exact cosine search, and stable tile IDs. It has no optimizer and creates no
+trained parameters. The produced CSV must be retained with its SHA256; the
+trainer records that hash in `reproducibility.json` and every checkpoint.
 
 ```bash
-bash scripts/run_reference_pipeline.sh /path/to/fresh/output-directory
+python scripts/prepare_dino_negatives.py \
+  --dataset /path/to/UAV90K \
+  --output /path/to/fixed_dino_negatives.csv \
+  --splits train val \
+  --search-k 200 \
+  --negatives-per-query 8 \
+  --batch-size 128 \
+  --device cuda --amp
 ```
+
+The CSV may be distributed directly so a reproducer does not need to repeat
+this preprocessing.
+
+## One training command
+
+```bash
+python -u scripts/train.py \
+  --dataset /path/to/UAV90K \
+  --negative-manifest /path/to/fixed_dino_negatives.csv \
+  --output-dir /path/to/run \
+  --epochs 30 \
+  --batch-size 2 \
+  --num-workers 4 \
+  --learning-rate 3e-4 \
+  --seed 42 \
+  --deterministic \
+  --device cuda --amp
+```
+
+This command starts from the public DINOv2 weights and random task heads. It
+does not load a first-stage UAV checkpoint. `--resume` is only fault recovery
+for the same run and restores model, optimizer, scheduler, scaler, loader, and
+random states.
+
+After training, build the satellite index and evaluate. Neither operation
+changes model parameters.
+
+## Result status
+
+No experiment has been launched for the single-stage redesign yet. The former
+72.01% Recall@1 / 82.73% LSR@15 / 70.16% HSR@15 / 14.10 m MLE / 14.31 deg MHE
+numbers belong only to the preserved two-stage baseline and are not claimed by
+this branch.

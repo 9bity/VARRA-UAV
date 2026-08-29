@@ -57,9 +57,11 @@ class LocalRegistrationHead(nn.Module):
             nn.GELU(),
             nn.Linear(model_dim, 2),
         )
-        self.confidence_head = nn.Sequential(
-            nn.LayerNorm(pose_dim + 2),
-            nn.Linear(pose_dim + 2, model_dim // 2),
+        # Candidate quality is based on semantic agreement and geometric
+        # consistency, rather than an opaque feature-only confidence score.
+        self.quality_head = nn.Sequential(
+            nn.LayerNorm(pose_dim + 4),
+            nn.Linear(pose_dim + 4, model_dim // 2),
             nn.GELU(),
             nn.Linear(model_dim // 2, 1),
         )
@@ -103,5 +105,17 @@ class LocalRegistrationHead(nn.Module):
         entropy = -(flat_heatmap * flat_heatmap.clamp_min(1e-8).log()).sum(
             dim=-1, keepdim=True
         )
-        confidence = self.confidence_head(torch.cat((pose_features, peak, entropy), dim=-1))
-        return LocalizerOutput(position, heading, confidence.squeeze(-1), attention)
+        quality_features = torch.cat(
+            (
+                pose_features,
+                peak,
+                entropy,
+                attention.reciprocal_score.unsqueeze(-1),
+                attention.geometric_residual.unsqueeze(-1),
+            ),
+            dim=-1,
+        )
+        quality = self.quality_head(quality_features)
+        # Keep the field name for inference/checkpoint API compatibility.  In
+        # the single-stage model it is a relative candidate-quality logit.
+        return LocalizerOutput(position, heading, quality.squeeze(-1), attention)

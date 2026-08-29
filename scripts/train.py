@@ -1,4 +1,4 @@
-"""Train the UAV90K global-retrieval and local-registration network."""
+"""Train the complete UAV90K model in one continuous optimizer run."""
 
 from __future__ import annotations
 
@@ -19,10 +19,13 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 from uavgeo.data.catalog import UAV90KCatalog
-from uavgeo.data.datasets import LocalRegistrationDataset
-from uavgeo.losses import GlobalToLocalLoss, LossOutput
+from uavgeo.data.datasets import SingleStagePairDataset
 from uavgeo.mining import read_negative_manifest
 from uavgeo.models.system import GlobalToLocalModel
+from uavgeo.single_stage_losses import (
+    SingleStageGlobalToLocalLoss,
+    SingleStageLossOutput,
+)
 from uavgeo.training import (
     append_jsonl,
     atomic_torch_save,
@@ -38,7 +41,7 @@ from uavgeo.training import (
 )
 
 
-LOSS_NAMES = ("total", "retrieval", "position", "heatmap", "heading", "confidence")
+LOSS_NAMES = ("total", "retrieval", "position", "heatmap", "heading", "quality")
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,10 +66,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local-model-dim", type=int, default=256)
     parser.add_argument("--adapter-dim", type=int, default=128)
     parser.add_argument("--num-heads", type=int, default=8)
-    parser.add_argument("--negative-manifest", type=Path)
-    parser.add_argument("--negative-probability", type=float, default=0.0)
-    parser.add_argument("--confidence-weight", type=float, default=0.0)
-    parser.add_argument("--init-checkpoint", type=Path)
+    parser.add_argument("--negative-manifest", type=Path, required=True)
+    parser.add_argument("--quality-weight", type=float, default=0.5)
+    parser.add_argument("--quality-margin", type=float, default=1.0)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--log-interval", type=int, default=50)
     parser.add_argument("--limit-train-batches", type=int)
@@ -84,7 +86,7 @@ def resolve_device(requested: str) -> torch.device:
 
 
 def make_loader(
-    dataset: LocalRegistrationDataset,
+    dataset: SingleStagePairDataset,
     batch_size: int,
     num_workers: int,
     shuffle: bool,
@@ -107,11 +109,12 @@ def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Tensor]
     keys = (
         "query_image",
         "positive_satellite_tile",
-        "satellite_tiles",
-        "tile_validity",
+        "positive_satellite_tiles",
+        "positive_tile_validity",
+        "negative_satellite_tiles",
+        "negative_tile_validity",
         "target_xy",
         "heading",
-        "candidate_label",
     )
     return {
         key: batch[key].to(device, non_blocking=device.type == "cuda")
@@ -130,32 +133,35 @@ def autocast_context(device: torch.device, enabled: bool) -> Any:
 
 def batch_losses(
     model: GlobalToLocalModel,
-    criterion: GlobalToLocalLoss,
+    criterion: SingleStageGlobalToLocalLoss,
     batch: dict[str, Any],
     device: torch.device,
     amp_enabled: bool,
-) -> LossOutput:
+) -> SingleStageLossOutput:
     tensors = move_batch(batch, device)
     positive_mask = build_multi_positive_mask(
         batch["gt_tile_id"], batch["gt_tile_id"]
     ).to(device)
     with autocast_context(device, amp_enabled):
-        output = model(
+        output = model.forward_single_stage(
             tensors["query_image"],
             tensors["positive_satellite_tile"],
-            tensors["satellite_tiles"],
-            tensors["tile_validity"],
+            tensors["positive_satellite_tiles"],
+            tensors["negative_satellite_tiles"],
+            tensors["positive_tile_validity"],
+            tensors["negative_tile_validity"],
         )
         return criterion(
             output,
             tensors["target_xy"],
             tensors["heading"],
             positive_mask=positive_mask,
-            candidate_label=tensors["candidate_label"],
         )
 
 
-def update_totals(totals: dict[str, float], losses: LossOutput, batch_size: int) -> None:
+def update_totals(
+    totals: dict[str, float], losses: SingleStageLossOutput, batch_size: int
+) -> None:
     for name in LOSS_NAMES:
         totals[name] += float(getattr(losses, name).detach()) * batch_size
 
@@ -177,7 +183,7 @@ def limited_batches(
 
 def train_epoch(
     model: GlobalToLocalModel,
-    criterion: GlobalToLocalLoss,
+    criterion: SingleStageGlobalToLocalLoss,
     loader: DataLoader[dict[str, Any]],
     optimizer: AdamW,
     scaler: torch.cuda.amp.GradScaler,
@@ -217,7 +223,7 @@ def train_epoch(
 @torch.no_grad()
 def validate_epoch(
     model: GlobalToLocalModel,
-    criterion: GlobalToLocalLoss,
+    criterion: SingleStageGlobalToLocalLoss,
     loader: DataLoader[dict[str, Any]],
     device: torch.device,
     amp_enabled: bool,
@@ -249,14 +255,10 @@ def main() -> None:
         raise ValueError("batch-size must be at least 2 because retrieval needs in-batch negatives")
     if args.epochs <= 0:
         raise ValueError("epochs must be positive")
-    if not 0.0 <= args.negative_probability <= 1.0:
-        raise ValueError("negative-probability must be in [0,1]")
-    if args.negative_probability > 0 and args.negative_manifest is None:
-        raise ValueError("negative-probability requires --negative-manifest")
-    if args.confidence_weight > 0 and args.negative_probability <= 0:
-        raise ValueError("confidence loss requires negative candidate sampling")
-    if args.init_checkpoint is not None and args.resume is not None:
-        raise ValueError("Use either --init-checkpoint or --resume, not both")
+    if args.quality_weight < 0:
+        raise ValueError("quality-weight must be non-negative")
+    if args.quality_margin < 0:
+        raise ValueError("quality-margin must be non-negative")
 
     device = resolve_device(args.device)
     amp_enabled = bool(args.amp and device.type == "cuda")
@@ -265,10 +267,14 @@ def main() -> None:
     save_configuration(args, args.output_dir / "config.json")
     reproducibility = runtime_manifest(args.seed, args.deterministic)
     reproducibility["dataset"] = dataset_fingerprint(args.dataset)
+    from uavgeo.checkpoints import file_sha256
+
+    reproducibility["fixed_dino_negatives"] = {
+        "path": str(args.negative_manifest.resolve()),
+        "sha256": file_sha256(args.negative_manifest),
+    }
     dino_weights = os.environ.get("DINOV2_WEIGHTS")
     if dino_weights:
-        from uavgeo.checkpoints import file_sha256
-
         reproducibility["dinov2_weights"] = {
             "path": dino_weights,
             "sha256": file_sha256(dino_weights),
@@ -285,22 +291,16 @@ def main() -> None:
     )
 
     catalog = UAV90KCatalog(args.dataset)
-    negative_candidates = (
-        read_negative_manifest(args.negative_manifest)
-        if args.negative_manifest is not None
-        else None
-    )
-    train_dataset = LocalRegistrationDataset(
+    negative_candidates = read_negative_manifest(args.negative_manifest)
+    train_dataset = SingleStagePairDataset(
         catalog,
         "train",
         negative_candidates=negative_candidates,
-        negative_probability=args.negative_probability,
     )
-    val_dataset = LocalRegistrationDataset(
+    val_dataset = SingleStagePairDataset(
         catalog,
         "val",
         negative_candidates=negative_candidates,
-        negative_probability=args.negative_probability,
     )
     loader_generator = torch.Generator().manual_seed(args.seed)
     train_loader = make_loader(
@@ -318,18 +318,10 @@ def main() -> None:
         adapter_dim=args.adapter_dim,
         num_heads=args.num_heads,
     ).to(device)
-    if args.init_checkpoint is not None:
-        initial = torch.load(
-            args.init_checkpoint, map_location=device, weights_only=False
-        )
-        initial_dataset = initial.get("reproducibility", {}).get("dataset", {})
-        if initial_dataset and initial_dataset.get("sha256") != reproducibility[
-            "dataset"
-        ]["sha256"]:
-            raise ValueError("Initialization checkpoint used a different dataset split")
-        model.load_state_dict(initial["model"])
-        print(f"initialized model weights from {args.init_checkpoint}")
-    criterion = GlobalToLocalLoss(confidence_weight=args.confidence_weight)
+    criterion = SingleStageGlobalToLocalLoss(
+        quality_weight=args.quality_weight,
+        quality_margin=args.quality_margin,
+    )
     optimizer = AdamW(
         trainable_parameters(model),
         lr=args.learning_rate,
@@ -349,6 +341,13 @@ def main() -> None:
             "dataset"
         ]["sha256"]:
             raise ValueError("Resume checkpoint used a different dataset split")
+        resumed_negatives = checkpoint.get("reproducibility", {}).get(
+            "fixed_dino_negatives", {}
+        )
+        if resumed_negatives and resumed_negatives.get("sha256") != reproducibility[
+            "fixed_dino_negatives"
+        ]["sha256"]:
+            raise ValueError("Resume checkpoint used a different negative manifest")
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])

@@ -23,6 +23,8 @@ class VARRAOutput:
     translation: Tensor
     scale: Tensor
     geometric_heading: Tensor
+    reciprocal_score: Tensor
+    geometric_residual: Tensor
 
 
 def normalized_grid(
@@ -189,6 +191,14 @@ class VARRA(nn.Module):
         squared_distance = (
             projected_uvp[:, :, None, :] - satellite_coordinates[:, None, :, :]
         ).square().sum(dim=-1)
+        reliability_weights = query_reliability / query_reliability.sum(
+            dim=-1, keepdim=True
+        ).clamp_min(1e-8)
+        geometric_residual = (
+            (semantic_normalized * squared_distance).sum(dim=-1)
+            * reliability_weights
+        ).sum(dim=-1)
+        reciprocal_score = query_reliability.mean(dim=-1)
         sigma = F.softplus(self.geometry_sigma_raw) + 0.05
         geometric_gate = torch.exp(-squared_distance / (2.0 * sigma.square()))
         strength = torch.sigmoid(self.geometry_strength_logit)
@@ -225,4 +235,6 @@ class VARRA(nn.Module):
             translation=translation,
             scale=scale,
             geometric_heading=heading,
+            reciprocal_score=reciprocal_score,
+            geometric_residual=geometric_residual,
         )

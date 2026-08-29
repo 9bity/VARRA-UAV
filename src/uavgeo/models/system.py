@@ -19,6 +19,16 @@ class GlobalToLocalOutput:
     localization: LocalizerOutput
 
 
+@dataclass
+class SingleStageOutput:
+    """Outputs used by the one-run positive/negative joint objective."""
+
+    query_descriptor: Tensor
+    satellite_descriptor: Tensor
+    positive_localization: LocalizerOutput
+    negative_localization: LocalizerOutput
+
+
 class GlobalToLocalModel(nn.Module):
     """One shared DINOv2 backbone with trainable retrieval and VARRA heads."""
 
@@ -137,3 +147,34 @@ class GlobalToLocalModel(nn.Module):
         satellite_descriptor, _ = self.encode_satellite(positive_satellite_tiles)
         localization = self.localize_candidates(query, satellite_tiles, tile_validity)
         return GlobalToLocalOutput(query_descriptor, satellite_descriptor, localization)
+
+    def forward_single_stage(
+        self,
+        query_images: Tensor,
+        positive_satellite_tiles: Tensor,
+        positive_candidate_tiles: Tensor,
+        negative_candidate_tiles: Tensor,
+        positive_tile_validity: Optional[Tensor] = None,
+        negative_tile_validity: Optional[Tensor] = None,
+    ) -> SingleStageOutput:
+        """Jointly score a positive and a hard-negative candidate.
+
+        Query DINO features are extracted once and reused by both local
+        candidates.  This provides all supervision required by the retrieval,
+        pose, and quality heads in one optimizer run.
+        """
+
+        query_descriptor, query = self.encode_query(query_images)
+        satellite_descriptor, _ = self.encode_satellite(positive_satellite_tiles)
+        positive_localization = self.localize_candidates(
+            query, positive_candidate_tiles, positive_tile_validity
+        )
+        negative_localization = self.localize_candidates(
+            query, negative_candidate_tiles, negative_tile_validity
+        )
+        return SingleStageOutput(
+            query_descriptor=query_descriptor,
+            satellite_descriptor=satellite_descriptor,
+            positive_localization=positive_localization,
+            negative_localization=negative_localization,
+        )

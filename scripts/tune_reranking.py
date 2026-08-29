@@ -156,6 +156,7 @@ def evaluate_setting(
     transform: str,
 ) -> dict[str, Any]:
     predicted_tiles: list[str] = []
+    coarse_retrieved_tiles: list[str] = []
     target_tiles: list[str] = []
     predicted_xy: list[list[float]] = []
     target_xy: list[list[float]] = []
@@ -179,12 +180,18 @@ def evaluate_setting(
             + weight
             * confidence_value(float(item["confidence_logit"]), transform),
         )
-        predicted_tiles.append(candidates[0]["center_tile_id"])
+        coarse_retrieved_tiles.append(candidates[0]["center_tile_id"])
         target_tiles.append(target.gt_tile_id)
         city = catalog.tiles[chosen["center_tile_id"]].city
         map_record = catalog.maps_by_city[city]
         global_x = min(max(float(chosen["global_x"]), 0.0), map_record.width - 1.0)
         global_y = min(max(float(chosen["global_y"]), 0.0), map_record.height - 1.0)
+        tile_col = min(int(global_x // 256), 15)
+        tile_row = min(int(global_y // 256), 15)
+        predicted_tile_id = catalog.tile_id(city, tile_row, tile_col)
+        if predicted_tile_id is None:
+            raise RuntimeError("Final position does not map to a satellite tile")
+        predicted_tiles.append(predicted_tile_id)
         latitude, longitude = map_record.pixel_to_geo(global_x, global_y)
         predicted_xy.append([global_x, global_y])
         target_xy.append([target.global_x, target.global_y])
@@ -220,11 +227,17 @@ def evaluate_setting(
         predicted != target
         for predicted, target in zip(predicted_cities, target_cities)
     )
+    coarse_retrieval_recall_at_1 = 100.0 * sum(
+        predicted == target
+        for predicted, target in zip(coarse_retrieved_tiles, target_tiles)
+    ) / len(target_tiles)
     return {
         "top_k": top_k,
         "confidence_transform": transform,
         "confidence_weight": weight,
         "cross_city_failures": cross_city,
+        "recall_at_1_protocol": "final_reranked_predicted_tile",
+        "coarse_retrieval_recall_at_1": coarse_retrieval_recall_at_1,
         "mean_selected_rank": sum(selected_ranks) / len(selected_ranks),
         **metrics.as_dict(),
     }

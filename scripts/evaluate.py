@@ -88,7 +88,10 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     prediction_path = args.output_dir / f"{args.split}_predictions.csv"
 
+    # Primary Recall@1 uses the final reranked/localized tile.  Keep coarse
+    # retrieval Top-1 only as a diagnostic so the two stages are not confused.
     predicted_tiles: list[str] = []
+    coarse_retrieved_tiles: list[str] = []
     target_tiles: list[str] = []
     predicted_xy: list[list[float]] = []
     target_xy: list[list[float]] = []
@@ -144,7 +147,8 @@ def main() -> None:
                     "selected_rank": prediction.selected_rank,
                 }
             )
-            predicted_tiles.append(prediction.retrieved_top1_tile_id)
+            predicted_tiles.append(prediction.predicted_tile_id)
+            coarse_retrieved_tiles.append(prediction.retrieved_top1_tile_id)
             target_tiles.append(target.gt_tile_id)
             predicted_xy.append([prediction.global_x, prediction.global_y])
             target_xy.append([target.global_x, target.global_y])
@@ -179,6 +183,10 @@ def main() -> None:
         predicted != target
         for predicted, target in zip(predicted_cities, target_cities)
     )
+    coarse_retrieval_recall_at_1 = 100.0 * sum(
+        predicted == target
+        for predicted, target in zip(coarse_retrieved_tiles, target_tiles)
+    ) / sample_count
     summary = {
         "split": args.split,
         "samples": sample_count,
@@ -189,6 +197,8 @@ def main() -> None:
         "cross_city_failures": cross_city_failures,
         "cross_city_failure_rate": 100.0 * cross_city_failures / sample_count,
         "dataset_fingerprint": actual_dataset["sha256"],
+        "recall_at_1_protocol": "final_reranked_predicted_tile",
+        "coarse_retrieval_recall_at_1": coarse_retrieval_recall_at_1,
         **metrics.as_dict(),
     }
     summary_path = args.output_dir / f"{args.split}_metrics.json"

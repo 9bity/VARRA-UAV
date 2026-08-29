@@ -60,7 +60,9 @@ changes model parameters.
 
 ## Result status
 
-No experiment has been launched for the single-stage redesign yet. The former
-72.01% Recall@1 / 82.73% LSR@15 / 70.16% HSR@15 / 14.10 m MLE / 14.31 deg MHE
-numbers belong only to the preserved two-stage baseline and are not claimed by
-this branch.
+No experiment has been launched for the single-stage redesign yet. Recomputing
+the preserved two-stage baseline CSV with the corrected final-stage definition
+gives 81.84% Recall@1. The previously printed 72.01% value was the coarse
+retrieval diagnostic and must not be placed in the primary metric table.
+The baseline's remaining 82.73% LSR@15 / 70.16% HSR@15 / 14.10 m MLE /
+14.31 deg MHE numbers are likewise not claimed by this branch.

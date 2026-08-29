@@ -6,8 +6,14 @@ manifest. The primary result row contains:
 | Recall@1 up | LSR@15 up | HSR@15 up | MLE down | MHE down |
 |---:|---:|---:|---:|---:|
 
-- **Recall@1** is the percentage of queries whose first globally retrieved
-  satellite tile has the same `tile_id` as the ground-truth tile.
+- **Recall@1** is the percentage of queries whose **final** predicted position,
+  after Top-K retrieval, 3x3 expansion, VARRA matching, and candidate
+  reranking, maps to the same satellite `tile_id` as the ground truth. This is
+  the global-tile analogue of BearingUAV's final position-region recall; it is
+  not the first-stage retrieval recall.
+- **Coarse retrieval Recall@1** is written to the JSON result only as a
+  diagnostic field named `coarse_retrieval_recall_at_1`. It is not one of the
+  five primary paper metrics.
 - **LSR@15** is the percentage of final continuous position predictions whose
   Euclidean map error is at most 15 meters.
 - **HSR@15** is the percentage of heading predictions whose shortest circular

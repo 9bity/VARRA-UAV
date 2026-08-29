@@ -106,8 +106,10 @@ def compute_bearing_metrics(
 ) -> BearingMetrics:
     """Compute the five primary metrics using Bearing-UAV aggregation behavior.
 
-    Recall@1 is exact global tile retrieval accuracy. LSR and HSR are micro
-    success rates over samples. MLE follows the original code's macro average:
+    Recall@1 is exact final predicted-tile accuracy after all model stages.
+    The caller must pass tile IDs obtained from the final continuous position,
+    not the coarse retrieval list. LSR and HSR are micro success rates over
+    samples. MLE follows the original code's macro average:
     location errors are averaged within each city/map and then across maps. MHE
     is the mean shortest circular heading error over all samples.
     """

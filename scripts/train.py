@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import time
 from contextlib import nullcontext
 from pathlib import Path
@@ -27,7 +28,11 @@ from uavgeo.training import (
     atomic_torch_save,
     build_multi_positive_mask,
     capture_rng_state,
+    dataset_fingerprint,
     restore_rng_state,
+    repository_revision,
+    runtime_manifest,
+    seed_worker,
     seed_everything,
     trainable_parameters,
 )
@@ -47,6 +52,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--deterministic", action=argparse.BooleanOptionalAction, default=True
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--backbone", default="dinov2_vitb14")
@@ -91,6 +99,7 @@ def make_loader(
         drop_last=shuffle,
         persistent_workers=False,
         generator=generator,
+        worker_init_fn=seed_worker,
     )
 
 
@@ -251,9 +260,29 @@ def main() -> None:
 
     device = resolve_device(args.device)
     amp_enabled = bool(args.amp and device.type == "cuda")
-    seed_everything(args.seed)
+    seed_everything(args.seed, deterministic=args.deterministic)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     save_configuration(args, args.output_dir / "config.json")
+    reproducibility = runtime_manifest(args.seed, args.deterministic)
+    reproducibility["dataset"] = dataset_fingerprint(args.dataset)
+    dino_weights = os.environ.get("DINOV2_WEIGHTS")
+    if dino_weights:
+        from uavgeo.checkpoints import file_sha256
+
+        reproducibility["dinov2_weights"] = {
+            "path": dino_weights,
+            "sha256": file_sha256(dino_weights),
+        }
+    dino_repo = os.environ.get("DINOV2_REPO")
+    if dino_repo:
+        reproducibility["dinov2_repository"] = {
+            "path": dino_repo,
+            "git_revision": repository_revision(Path(dino_repo)),
+        }
+    (args.output_dir / "reproducibility.json").write_text(
+        json.dumps(reproducibility, indent=2),
+        encoding="utf-8",
+    )
 
     catalog = UAV90KCatalog(args.dataset)
     negative_candidates = (
@@ -293,6 +322,11 @@ def main() -> None:
         initial = torch.load(
             args.init_checkpoint, map_location=device, weights_only=False
         )
+        initial_dataset = initial.get("reproducibility", {}).get("dataset", {})
+        if initial_dataset and initial_dataset.get("sha256") != reproducibility[
+            "dataset"
+        ]["sha256"]:
+            raise ValueError("Initialization checkpoint used a different dataset split")
         model.load_state_dict(initial["model"])
         print(f"initialized model weights from {args.init_checkpoint}")
     criterion = GlobalToLocalLoss(confidence_weight=args.confidence_weight)
@@ -310,6 +344,11 @@ def main() -> None:
         checkpoint = torch.load(
             args.resume, map_location=device, weights_only=False
         )
+        resumed_dataset = checkpoint.get("reproducibility", {}).get("dataset", {})
+        if resumed_dataset and resumed_dataset.get("sha256") != reproducibility[
+            "dataset"
+        ]["sha256"]:
+            raise ValueError("Resume checkpoint used a different dataset split")
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
@@ -374,6 +413,7 @@ def main() -> None:
             "loader_generator_state": loader_generator.get_state(),
             "rng_state": capture_rng_state(),
             "args": vars(args),
+            "reproducibility": reproducibility,
         }
         atomic_torch_save(checkpoint, args.output_dir / "latest.pt")
         if improved:

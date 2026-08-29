@@ -43,19 +43,36 @@ class BearingMetricsTest(unittest.TestCase):
 
     def test_cross_city_error_uses_geographic_distance(self) -> None:
         metrics = compute_bearing_metrics(
-            predicted_tile_ids=["cityb_r00_c00"],
-            target_tile_ids=["citya_r00_c00"],
-            predicted_xy=[[100.0, 100.0]],
-            target_xy=[[100.0, 100.0]],
-            predicted_heading=[heading(0)],
-            target_heading=[heading(0)],
-            cities=["citya"],
-            predicted_cities=["cityb"],
-            predicted_latlon=[[25.0, 121.5]],
-            target_latlon=[[35.6, 139.7]],
+            predicted_tile_ids=["citya_r00_c00", "cityb_r00_c00"],
+            target_tile_ids=["citya_r00_c00", "citya_r00_c00"],
+            predicted_xy=[[100.0, 100.0], [100.0, 100.0]],
+            target_xy=[[100.0, 100.0], [100.0, 100.0]],
+            predicted_heading=[heading(0), heading(0)],
+            target_heading=[heading(0), heading(0)],
+            cities=["citya", "citya"],
+            predicted_cities=["citya", "cityb"],
+            predicted_latlon=[[35.6, 139.7], [25.0, 121.5]],
+            target_latlon=[[35.6, 139.7], [35.6, 139.7]],
+            mle_protocol="global-geodesic",
         )
-        self.assertEqual(metrics.lsr_at_15, 0.0)
+        self.assertEqual(metrics.lsr_at_15, 50.0)
         self.assertGreater(metrics.mle, 1_000_000.0)
+
+    def test_bearing_compatible_mle_excludes_cross_city_failures(self) -> None:
+        metrics = compute_bearing_metrics(
+            predicted_tile_ids=["citya_r00_c00", "cityb_r00_c00"],
+            target_tile_ids=["citya_r00_c00", "citya_r00_c00"],
+            predicted_xy=[[104.0, 100.0], [100.0, 100.0]],
+            target_xy=[[100.0, 100.0], [100.0, 100.0]],
+            predicted_heading=[heading(0), heading(0)],
+            target_heading=[heading(0), heading(0)],
+            cities=["citya", "citya"],
+            predicted_cities=["citya", "cityb"],
+            predicted_latlon=[[35.6, 139.7], [25.0, 121.5]],
+            target_latlon=[[35.6, 139.7], [35.6, 139.7]],
+        )
+        self.assertEqual(metrics.lsr_at_15, 50.0)
+        self.assertAlmostEqual(metrics.mle, 1.0)
 
 
 if __name__ == "__main__":

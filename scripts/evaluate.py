@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import warnings
 from pathlib import Path
 
 import torch
@@ -15,6 +16,7 @@ from uavgeo.data.datasets import UAVQueryDataset
 from uavgeo.inference import GlobalToLocalInference
 from uavgeo.metrics import compute_bearing_metrics
 from uavgeo.models.retrieval import SatelliteFeatureIndex
+from uavgeo.training import dataset_fingerprint
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,6 +29,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--candidate-batch-size", type=int, default=1)
     parser.add_argument("--confidence-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--mle-protocol",
+        choices=("bearing-compatible", "global-geodesic"),
+        default="bearing-compatible",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--limit", type=int)
@@ -48,6 +55,15 @@ def main() -> None:
         raise ValueError("top-k must be positive")
     device = resolve_device(args.device)
     model, checkpoint = load_trained_model(args.checkpoint, device)
+    expected_dataset = checkpoint.get("reproducibility", {}).get("dataset", {})
+    actual_dataset = dataset_fingerprint(args.dataset)
+    if expected_dataset:
+        if expected_dataset.get("sha256") != actual_dataset["sha256"]:
+            raise ValueError("Dataset metadata/split fingerprint differs from training")
+    else:
+        warnings.warn(
+            "Legacy checkpoint has no dataset fingerprint; exact split verification is unavailable"
+        )
     index, index_metadata = SatelliteFeatureIndex.load(args.index)
     if index_metadata.get("checkpoint_epoch") != int(checkpoint["epoch"]):
         raise ValueError("Satellite index and model checkpoint epochs do not match")
@@ -153,12 +169,21 @@ def main() -> None:
         predicted_cities=predicted_cities,
         predicted_latlon=predicted_latlon,
         target_latlon=target_latlon,
+        mle_protocol=args.mle_protocol,
+    )
+    cross_city_failures = sum(
+        predicted != target
+        for predicted, target in zip(predicted_cities, target_cities)
     )
     summary = {
         "split": args.split,
         "samples": sample_count,
         "top_k": args.top_k,
         "confidence_weight": args.confidence_weight,
+        "mle_protocol": args.mle_protocol,
+        "cross_city_failures": cross_city_failures,
+        "cross_city_failure_rate": 100.0 * cross_city_failures / sample_count,
+        "dataset_fingerprint": actual_dataset["sha256"],
         **metrics.as_dict(),
     }
     summary_path = args.output_dir / f"{args.split}_metrics.json"

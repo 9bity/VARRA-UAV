@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Optional, Sequence, Union
+from typing import Literal, Optional, Sequence, Union
 
 import torch
 from torch import Tensor
@@ -100,6 +100,9 @@ def compute_bearing_metrics(
     predicted_cities: Optional[Sequence[str]] = None,
     predicted_latlon: Optional[Union[Tensor, Sequence[Sequence[float]]]] = None,
     target_latlon: Optional[Union[Tensor, Sequence[Sequence[float]]]] = None,
+    mle_protocol: Literal["bearing-compatible", "global-geodesic"] = (
+        "bearing-compatible"
+    ),
 ) -> BearingMetrics:
     """Compute the five primary metrics using Bearing-UAV aggregation behavior.
 
@@ -115,7 +118,13 @@ def compute_bearing_metrics(
     if len(predicted_tile_ids) != sample_count or len(cities) != sample_count:
         raise ValueError("Tile ID and city collections must have the same length")
 
-    position_errors = position_errors_meters(predicted_xy, target_xy, meters_per_pixel_xy)
+    if mle_protocol not in ("bearing-compatible", "global-geodesic"):
+        raise ValueError(f"Unsupported MLE protocol: {mle_protocol}")
+    local_position_errors = position_errors_meters(
+        predicted_xy, target_xy, meters_per_pixel_xy
+    )
+    position_errors = local_position_errors.clone()
+    cross_city = torch.zeros(sample_count, dtype=torch.bool)
     if predicted_cities is not None:
         if len(predicted_cities) != sample_count:
             raise ValueError("predicted_cities must match the sample count")
@@ -145,7 +154,15 @@ def compute_bearing_metrics(
     city_mle = []
     for city in city_names:
         mask = torch.tensor([item == city for item in cities], dtype=torch.bool)
-        if mask.any():
+        if mle_protocol == "bearing-compatible":
+            # Bearing-UAV receives the correct local map/RSB, so its MLE has no
+            # cross-map distance. Match that local-map precision protocol while
+            # continuing to count cross-city predictions as LSR failures.
+            mask = mask & ~cross_city
+            if not mask.any():
+                raise ValueError(f"No same-city predictions available for {city}")
+            city_mle.append(local_position_errors[mask].mean())
+        elif mask.any():
             city_mle.append(position_errors[mask].mean())
     mle = float(torch.stack(city_mle).mean())
     mhe = float(heading_errors.mean())

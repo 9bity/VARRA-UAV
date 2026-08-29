@@ -75,3 +75,8 @@ python scripts/train.py \
 `--resume` restores an interrupted run including optimizer, scheduler, scaler,
 data-loader generator, and random states. `--init-checkpoint` starts a new
 training stage from model weights only.
+
+For an exact seed-42 two-stage recipe, pinned dependencies, dataset/DINO
+fingerprints, deterministic settings, and expected metrics, see
+[`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md). The complete reference
+pipeline is available as `scripts/run_reference_pipeline.sh`.

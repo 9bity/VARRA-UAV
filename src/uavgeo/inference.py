@@ -49,16 +49,20 @@ class GlobalToLocalInference:
         index: SatelliteFeatureIndex,
         device: torch.device,
         confidence_weight: float = 0.0,
+        confidence_transform: str = "sigmoid",
         candidate_batch_size: int = 1,
         amp_enabled: bool = True,
     ) -> None:
         if candidate_batch_size <= 0:
             raise ValueError("candidate_batch_size must be positive")
+        if confidence_transform not in ("sigmoid", "logit"):
+            raise ValueError("confidence_transform must be 'sigmoid' or 'logit'")
         self.model = model.eval()
         self.catalog = catalog
         self.index = index
         self.device = device
         self.confidence_weight = float(confidence_weight)
+        self.confidence_transform = confidence_transform
         self.candidate_batch_size = candidate_batch_size
         self.amp_enabled = bool(amp_enabled and device.type == "cuda")
         self.candidate_loader = SatelliteCandidateLoader(catalog)
@@ -105,9 +109,12 @@ class GlobalToLocalInference:
         )
 
         retrieval_scores = retrieval.scores[0]
-        selection_scores = retrieval_scores + self.confidence_weight * torch.sigmoid(
-            confidence_logit
+        confidence_scores = (
+            torch.sigmoid(confidence_logit)
+            if self.confidence_transform == "sigmoid"
+            else confidence_logit
         )
+        selection_scores = retrieval_scores + self.confidence_weight * confidence_scores
         selected = int(selection_scores.argmax())
         candidates: list[CandidatePrediction] = []
         for index, center_id in enumerate(center_ids):

@@ -1,0 +1,19 @@
+{
+  "selection_source": "fixed validation split only",
+  "selection_rule": "LSR desc, HSR desc, MLE asc, MHE asc, cross-city failures asc",
+  "selected": {
+    "top_k": 15,
+    "candidate_batch_size": 15,
+    "confidence_transform": "logit",
+    "confidence_weight": 0.05,
+    "mle_protocol": "bearing-compatible"
+  },
+  "seed": 42,
+  "dataset_fingerprint": "fdaf3f74fed5e8fa953152a7d4c7bfbd02f0becdf1ff89a99dace52c3ad4001a",
+  "split_sha256": {
+    "train": "bd43d1ccf60180d7cdf3c8b11a8ab11e6706502d28a9eda20d16f5206c04a79b",
+    "val": "801c9fd410e86b7bcf15e1d59e16442c5d83df13b121e1a883c17e5d65c197b3",
+    "test": "758fbe665188b174218c51e4cb31f14d01374dd7c228ac941eb237fd27717496"
+  },
+  "dinov2_weights_sha256": "0b8b82f85de91b424aded121c7e1dcc2b7bc6d0adeea651bf73a13307fad8c73"
+}

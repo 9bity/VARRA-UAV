@@ -1,0 +1,21 @@
+{
+  "epochs": 30,
+  "batch_size": 16,
+  "num_workers": 8,
+  "learning_rate": 0.0003,
+  "weight_decay": 0.05,
+  "grad_clip": 1.0,
+  "seed": 42,
+  "deterministic": true,
+  "amp": true,
+  "backbone": "dinov2_vitb14",
+  "unfreeze_backbone": false,
+  "retrieval_dim": 256,
+  "local_model_dim": 256,
+  "adapter_dim": 128,
+  "num_heads": 8,
+  "quality_weight": 0.5,
+  "quality_margin": 1.0,
+  "resume": null,
+  "log_interval": 20
+}

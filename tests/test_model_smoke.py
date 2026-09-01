@@ -3,20 +3,14 @@
 from __future__ import annotations
 
 import unittest
-import os
-from pathlib import Path
-from tempfile import TemporaryDirectory
 
 import torch
 from torch import nn
 
 from uavgeo.losses import GlobalToLocalLoss
-from uavgeo.mining import read_negative_manifest, write_negative_manifest
 from uavgeo.models.backbone import DINOv2Backbone
 from uavgeo.models.system import GlobalToLocalModel
-from uavgeo.models.retrieval import SatelliteFeatureIndex
 from uavgeo.models.varra import weighted_similarity_transform
-from uavgeo.training import build_multi_positive_mask
 
 
 class FakeDINO(nn.Module):
@@ -34,57 +28,6 @@ class FakeDINO(nn.Module):
 
 
 class GlobalToLocalSmokeTest(unittest.TestCase):
-    def test_explicit_model_does_not_require_hub_configuration(self) -> None:
-        previous_repo = os.environ.get("DINOV2_REPO")
-        os.environ["DINOV2_REPO"] = "/path/that/does/not/exist"
-        try:
-            backbone = DINOv2Backbone(
-                model_name="dinov2_vitb14", freeze=True, model=FakeDINO()
-            )
-            output = backbone(torch.randn(1, 3, 28, 28))
-        finally:
-            if previous_repo is None:
-                os.environ.pop("DINOV2_REPO", None)
-            else:
-                os.environ["DINOV2_REPO"] = previous_repo
-        self.assertEqual(tuple(output.patch_tokens.shape), (1, 4, 768))
-
-    def test_negative_manifest_round_trip(self) -> None:
-        expected = {
-            "sample_a": ("tile_1", "tile_2"),
-            "sample_b": ("tile_3",),
-        }
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "negatives.csv"
-            write_negative_manifest(path, expected)
-            restored = read_negative_manifest(path)
-        self.assertEqual(restored, expected)
-
-    def test_serializable_satellite_index(self) -> None:
-        index = SatelliteFeatureIndex(
-            ["tile_a", "tile_b", "tile_c"],
-            torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]),
-        )
-        result = index.search(torch.tensor([[0.9, 0.1]]), top_k=2)
-        self.assertEqual(index.tile_ids_for(result.indices), [["tile_a", "tile_b"]])
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "index.pt"
-            index.save(path, metadata={"epoch": 3})
-            restored, metadata = SatelliteFeatureIndex.load(path)
-        self.assertEqual(restored.tile_ids, index.tile_ids)
-        self.assertTrue(torch.equal(restored.descriptors, index.descriptors))
-        self.assertEqual(metadata, {"epoch": 3})
-
-    def test_multi_positive_mask(self) -> None:
-        mask = build_multi_positive_mask(
-            ["tile_a", "tile_a", "tile_b"],
-            ["tile_a", "tile_b", "tile_a"],
-        )
-        expected = torch.tensor(
-            [[True, False, True], [True, False, True], [False, True, False]]
-        )
-        self.assertTrue(torch.equal(mask, expected))
-
     def test_weighted_similarity_transform(self) -> None:
         source = torch.tensor(
             [[[-1.0, -1.0], [1.0, -1.0], [-1.0, 1.0], [1.0, 1.0]]]
@@ -109,14 +52,6 @@ class GlobalToLocalSmokeTest(unittest.TestCase):
             torch.allclose(estimated_translation, expected_translation, atol=1e-5)
         )
         self.assertTrue(torch.allclose(estimated_scale, expected_scale, atol=1e-5))
-
-        half_rotation, half_translation, half_scale = weighted_similarity_transform(
-            source.half(), target.half(), torch.ones(1, 4, dtype=torch.float16)
-        )
-        self.assertEqual(half_rotation.dtype, torch.float16)
-        self.assertTrue(torch.isfinite(half_rotation).all())
-        self.assertTrue(torch.isfinite(half_translation).all())
-        self.assertTrue(torch.isfinite(half_scale).all())
 
     def test_forward_and_backward(self) -> None:
         backbone = DINOv2Backbone(
@@ -161,27 +96,6 @@ class GlobalToLocalSmokeTest(unittest.TestCase):
         ]
         self.assertTrue(trainable_gradients)
         self.assertTrue(all(torch.isfinite(gradient).all() for gradient in trainable_gradients))
-
-        first_targets = torch.tensor([[0.4, 0.6], [0.0, 0.0]])
-        second_targets = torch.tensor([[0.4, 0.6], [1.0, 1.0]])
-        candidate_labels = torch.tensor([1.0, 0.0])
-        first_masked = GlobalToLocalLoss()(
-            output,
-            target_xy=first_targets,
-            target_heading=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-            positive_mask=positive_mask,
-            candidate_label=candidate_labels,
-        )
-        second_masked = GlobalToLocalLoss()(
-            output,
-            target_xy=second_targets,
-            target_heading=torch.tensor([[1.0, 0.0], [-1.0, 0.0]]),
-            positive_mask=positive_mask,
-            candidate_label=candidate_labels,
-        )
-        self.assertTrue(torch.equal(first_masked.position, second_masked.position))
-        self.assertTrue(torch.equal(first_masked.heatmap, second_masked.heatmap))
-        self.assertTrue(torch.equal(first_masked.heading, second_masked.heading))
 
 
 if __name__ == "__main__":

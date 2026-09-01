@@ -36,9 +36,7 @@ def multi_positive_contrastive_loss(logits: Tensor, positive_mask: Tensor) -> Te
     return (torch.logsumexp(logits, dim=1) - torch.logsumexp(positive_logits, dim=1)).mean()
 
 
-def heatmap_point_nll(
-    heatmap: Tensor, target_xy: Tensor, reduction: str = "mean"
-) -> Tensor:
+def heatmap_point_nll(heatmap: Tensor, target_xy: Tensor) -> Tensor:
     """Bilinearly sample probability at a continuous [0,1] target position."""
 
     if heatmap.ndim != 3 or target_xy.shape != (heatmap.shape[0], 2):
@@ -51,17 +49,7 @@ def heatmap_point_nll(
         padding_mode="zeros",
         align_corners=True,
     ).flatten()
-    losses = -probability.clamp_min(1e-8).log()
-    if reduction == "none":
-        return losses
-    if reduction == "mean":
-        return losses.mean()
-    raise ValueError(f"Unsupported reduction: {reduction}")
-
-
-def masked_mean(values: Tensor, mask: Tensor) -> Tensor:
-    weights = mask.to(dtype=values.dtype)
-    return (values * weights).sum() / weights.sum().clamp_min(1.0)
+    return -probability.clamp_min(1e-8).log().mean()
 
 
 class GlobalToLocalLoss(nn.Module):
@@ -101,23 +89,12 @@ class GlobalToLocalLoss(nn.Module):
         )
         retrieval = 0.5 * (retrieval_query + retrieval_reference)
 
-        if candidate_label is None:
-            local_mask = torch.ones(batch, device=logits.device, dtype=torch.bool)
-        else:
-            local_mask = candidate_label.to(logits.device).bool()
-        position_per_sample = F.smooth_l1_loss(
-            output.localization.position_xy, target_xy, reduction="none"
-        ).mean(dim=-1)
-        position = masked_mean(position_per_sample, local_mask)
-        heatmap_per_sample = heatmap_point_nll(
-            output.localization.attention.heatmap, target_xy, reduction="none"
-        )
-        heatmap = masked_mean(heatmap_per_sample, local_mask)
+        position = F.smooth_l1_loss(output.localization.position_xy, target_xy)
+        heatmap = heatmap_point_nll(output.localization.attention.heatmap, target_xy)
         normalized_target_heading = F.normalize(target_heading, dim=-1)
-        heading_per_sample = 1.0 - (
-            output.localization.heading * normalized_target_heading
-        ).sum(dim=-1)
-        heading = masked_mean(heading_per_sample, local_mask)
+        heading = (
+            1.0 - (output.localization.heading * normalized_target_heading).sum(dim=-1)
+        ).mean()
         if candidate_label is None:
             confidence = output.localization.confidence_logit.new_zeros(())
         else:
@@ -133,3 +110,4 @@ class GlobalToLocalLoss(nn.Module):
             + self.confidence_weight * confidence
         )
         return LossOutput(total, retrieval, position, heatmap, heading, confidence)
+

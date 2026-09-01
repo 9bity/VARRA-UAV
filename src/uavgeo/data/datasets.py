@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence, Union
+from typing import Any, Callable, Optional, Union
 
 import numpy as np
 import torch
@@ -61,9 +61,6 @@ class UAVQueryDataset(Dataset[dict[str, Any]]):
             "sample_id": record.sample_id,
             "image": image,
             "global_xy": torch.tensor((record.global_x, record.global_y), dtype=torch.float32),
-            "latitude_longitude": torch.tensor(
-                (record.latitude, record.longitude), dtype=torch.float64
-            ),
             "heading": torch.tensor((record.heading_cos, record.heading_sin), dtype=torch.float32),
             "gt_tile_id": record.gt_tile_id,
             "city": record.city,
@@ -93,55 +90,6 @@ class SatelliteTileDataset(Dataset[dict[str, Any]]):
         }
 
 
-class SatelliteCandidateLoader:
-    """Load a center tile's padded 3x3 neighborhood for local registration."""
-
-    def __init__(
-        self,
-        catalog: UAV90KCatalog,
-        transform: Optional[ImageTransform] = None,
-        tile_size: int = 256,
-        cache_tiles: bool = False,
-    ) -> None:
-        self.catalog = catalog
-        self.transform = transform or DINOImageTransform(252)
-        self.tile_size = tile_size
-        self.cache_tiles = cache_tiles
-        self._tile_cache: dict[str, Tensor] = {}
-        self._black_tensor = self.transform(
-            Image.new("RGB", (self.tile_size, self.tile_size))
-        )
-
-    def _tile_tensor(self, tile_id: str) -> Tensor:
-        if tile_id in self._tile_cache:
-            return self._tile_cache[tile_id]
-        tensor = self.transform(load_rgb(self.catalog.tiles[tile_id].image_path))
-        if self.cache_tiles:
-            self._tile_cache[tile_id] = tensor
-        return tensor
-
-    def load(self, center_tile_id: str) -> tuple[Tensor, Tensor, Tensor]:
-        center = self.catalog.tiles[center_tile_id]
-        tensors: list[Tensor] = []
-        validity = torch.zeros((3, 3), dtype=torch.bool)
-        for index, tile in enumerate(self.catalog.neighborhood(center_tile_id)):
-            grid_row, grid_col = divmod(index, 3)
-            if tile is None:
-                tensor = self._black_tensor
-            else:
-                tensor = self._tile_tensor(tile.tile_id)
-                validity[grid_row, grid_col] = True
-            tensors.append(tensor)
-        origin = torch.tensor(
-            (
-                (center.col - 1) * self.tile_size,
-                (center.row - 1) * self.tile_size,
-            ),
-            dtype=torch.float32,
-        )
-        return torch.stack(tensors, dim=0), validity, origin
-
-
 class LocalRegistrationDataset(Dataset[dict[str, Any]]):
     """Return a UVP and a positive 3x3 candidate with continuous local targets.
 
@@ -157,21 +105,12 @@ class LocalRegistrationDataset(Dataset[dict[str, Any]]):
         query_transform: Optional[ImageTransform] = None,
         tile_transform: Optional[ImageTransform] = None,
         tile_size: int = 256,
-        negative_candidates: Optional[Mapping[str, Sequence[str]]] = None,
-        negative_probability: float = 0.0,
     ) -> None:
-        if not 0.0 <= negative_probability <= 1.0:
-            raise ValueError("negative_probability must be in [0,1]")
         self.catalog = catalog
         self.records = catalog.queries_for_split(split)
         self.query_transform = query_transform or DINOImageTransform(252)
         self.tile_transform = tile_transform or DINOImageTransform(252)
         self.tile_size = tile_size
-        self.negative_candidates = negative_candidates or {}
-        self.negative_probability = negative_probability
-        self.candidate_loader = SatelliteCandidateLoader(
-            catalog, self.tile_transform, tile_size
-        )
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -180,60 +119,41 @@ class LocalRegistrationDataset(Dataset[dict[str, Any]]):
     def __len__(self) -> int:
         return len(self.records)
 
-    def _candidate_center(self, record: QueryRecord) -> tuple[str, bool]:
+    def _candidate_center(self, record: QueryRecord) -> str:
+        candidates = self.catalog.positive_candidate_centers(record)
         key = f"{record.sample_id}:{self.epoch}".encode("utf-8")
-        digest = hashlib.sha256(key).digest()
-        negatives = self.negative_candidates.get(record.sample_id, ())
-        use_negative = (
-            bool(negatives)
-            and int.from_bytes(digest[:8], "little") / 2**64
-            < self.negative_probability
-        )
-        if use_negative:
-            choice = int.from_bytes(digest[8:16], "little") % len(negatives)
-            center = negatives[choice]
-            if center not in self.catalog.tiles:
-                raise ValueError(f"Unknown negative candidate center: {center}")
-            neighborhood_ids = {
-                tile.tile_id
-                for tile in self.catalog.neighborhood(center)
-                if tile is not None
-            }
-            if record.gt_tile_id in neighborhood_ids:
-                raise ValueError(
-                    f"Mislabeled negative contains GT tile: {record.sample_id}, {center}"
-                )
-            return center, False
-        positives = self.catalog.positive_candidate_centers(record)
-        choice = int.from_bytes(digest[8:16], "little") % len(positives)
-        return positives[choice], True
+        choice = int.from_bytes(hashlib.sha256(key).digest()[:8], "little") % len(candidates)
+        return candidates[choice]
 
     def _load_satellite_grid(self, center_tile_id: str) -> tuple[Tensor, Tensor]:
-        tiles, validity, _ = self.candidate_loader.load(center_tile_id)
-        return tiles, validity
+        black_tile = Image.new("RGB", (self.tile_size, self.tile_size))
+        tensors: list[Tensor] = []
+        validity = torch.zeros((3, 3), dtype=torch.bool)
+        for index, tile in enumerate(self.catalog.neighborhood(center_tile_id)):
+            grid_row, grid_col = divmod(index, 3)
+            if tile is None:
+                image = black_tile
+            else:
+                image = load_rgb(tile.image_path)
+                validity[grid_row, grid_col] = True
+            tensors.append(self.tile_transform(image))
+        return torch.stack(tensors, dim=0), validity
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         record = self.records[index]
         positive_tile = self.catalog.tiles[record.gt_tile_id]
-        center_tile_id, is_positive = self._candidate_center(record)
-        satellite_grid, tile_validity, mosaic_origin = self.candidate_loader.load(
-            center_tile_id
-        )
-        mosaic_origin_x = float(mosaic_origin[0])
-        mosaic_origin_y = float(mosaic_origin[1])
-        if is_positive:
-            target_x = (record.global_x - mosaic_origin_x) / (3 * self.tile_size)
-            target_y = (record.global_y - mosaic_origin_y) / (3 * self.tile_size)
-        else:
-            # Local pose labels are masked for negatives by GlobalToLocalLoss.
-            target_x = target_y = 0.5
-        if is_positive and not (0.0 <= target_x <= 1.0 and 0.0 <= target_y <= 1.0):
+        center_tile_id = self._candidate_center(record)
+        center = self.catalog.tiles[center_tile_id]
+        satellite_grid, tile_validity = self._load_satellite_grid(center_tile_id)
+        mosaic_origin_x = (center.col - 1) * self.tile_size
+        mosaic_origin_y = (center.row - 1) * self.tile_size
+        target_x = (record.global_x - mosaic_origin_x) / (3 * self.tile_size)
+        target_y = (record.global_y - mosaic_origin_y) / (3 * self.tile_size)
+        if not (0.0 <= target_x <= 1.0 and 0.0 <= target_y <= 1.0):
             raise RuntimeError(f"Target outside positive mosaic: {record.sample_id}")
 
         return {
             "sample_id": record.sample_id,
-            "gt_tile_id": record.gt_tile_id,
-            "city": record.city,
             "query_image": self.query_transform(load_rgb(record.uav_path)),
             "positive_satellite_tile": self.tile_transform(
                 load_rgb(positive_tile.image_path)
@@ -246,111 +166,6 @@ class LocalRegistrationDataset(Dataset[dict[str, Any]]):
             "target_xy": torch.tensor((target_x, target_y), dtype=torch.float32),
             "global_xy": torch.tensor((record.global_x, record.global_y), dtype=torch.float32),
             "heading": torch.tensor((record.heading_cos, record.heading_sin), dtype=torch.float32),
-            "candidate_label": torch.tensor(float(is_positive), dtype=torch.float32),
+            "candidate_label": torch.tensor(1.0, dtype=torch.float32),
             "tile_validity": tile_validity,
-        }
-
-
-class SingleStagePairDataset(Dataset[dict[str, Any]]):
-    """Return one positive and one fixed hard-negative 3x3 candidate.
-
-    The negative manifest is prepared once with the frozen, public DINOv2
-    backbone.  It therefore does not depend on a previously trained UAV model
-    and allows retrieval, localization, heading, and candidate ranking to be
-    optimized in one continuous training run.
-    """
-
-    def __init__(
-        self,
-        catalog: UAV90KCatalog,
-        split: str,
-        negative_candidates: Mapping[str, Sequence[str]],
-        query_transform: Optional[ImageTransform] = None,
-        tile_transform: Optional[ImageTransform] = None,
-        tile_size: int = 256,
-    ) -> None:
-        self.catalog = catalog
-        self.records = catalog.queries_for_split(split)
-        self.query_transform = query_transform or DINOImageTransform(252)
-        self.tile_transform = tile_transform or DINOImageTransform(252)
-        self.tile_size = tile_size
-        self.negative_candidates = negative_candidates
-        self.candidate_loader = SatelliteCandidateLoader(
-            catalog, self.tile_transform, tile_size
-        )
-        self.epoch = 0
-
-        missing = [
-            record.sample_id
-            for record in self.records
-            if not self.negative_candidates.get(record.sample_id)
-        ]
-        if missing:
-            preview = ", ".join(missing[:3])
-            raise ValueError(
-                f"Negative manifest is missing {len(missing)} {split} samples: {preview}"
-            )
-
-    def set_epoch(self, epoch: int) -> None:
-        self.epoch = int(epoch)
-
-    def __len__(self) -> int:
-        return len(self.records)
-
-    def _select(self, sample_id: str, values: Sequence[str], salt: str) -> str:
-        digest = hashlib.sha256(
-            f"{sample_id}:{self.epoch}:{salt}".encode("utf-8")
-        ).digest()
-        return values[int.from_bytes(digest[:8], "little") % len(values)]
-
-    def __getitem__(self, index: int) -> dict[str, Any]:
-        record = self.records[index]
-        positive_centers = self.catalog.positive_candidate_centers(record)
-        positive_center = self._select(record.sample_id, positive_centers, "positive")
-        negative_center = self._select(
-            record.sample_id,
-            self.negative_candidates[record.sample_id],
-            "negative",
-        )
-
-        negative_neighborhood = {
-            tile.tile_id
-            for tile in self.catalog.neighborhood(negative_center)
-            if tile is not None
-        }
-        if record.gt_tile_id in negative_neighborhood:
-            raise ValueError(
-                f"Negative candidate contains GT tile: {record.sample_id}, {negative_center}"
-            )
-
-        positive_grid, positive_validity, positive_origin = self.candidate_loader.load(
-            positive_center
-        )
-        negative_grid, negative_validity, _ = self.candidate_loader.load(
-            negative_center
-        )
-        target_x = (record.global_x - float(positive_origin[0])) / (3 * self.tile_size)
-        target_y = (record.global_y - float(positive_origin[1])) / (3 * self.tile_size)
-        if not (0.0 <= target_x <= 1.0 and 0.0 <= target_y <= 1.0):
-            raise RuntimeError(f"Target outside positive mosaic: {record.sample_id}")
-
-        positive_tile = self.catalog.tiles[record.gt_tile_id]
-        return {
-            "sample_id": record.sample_id,
-            "gt_tile_id": record.gt_tile_id,
-            "city": record.city,
-            "query_image": self.query_transform(load_rgb(record.uav_path)),
-            "positive_satellite_tile": self.tile_transform(
-                load_rgb(positive_tile.image_path)
-            ),
-            "positive_satellite_tiles": positive_grid,
-            "positive_tile_validity": positive_validity,
-            "positive_center_tile_id": positive_center,
-            "negative_satellite_tiles": negative_grid,
-            "negative_tile_validity": negative_validity,
-            "negative_center_tile_id": negative_center,
-            "target_xy": torch.tensor((target_x, target_y), dtype=torch.float32),
-            "heading": torch.tensor(
-                (record.heading_cos, record.heading_sin), dtype=torch.float32
-            ),
         }

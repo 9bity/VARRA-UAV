@@ -20,6 +20,12 @@ checkpoints/
 outputs/
 runs/
 
+# Never commit downloaded datasets, pretrained/trained weights, or logs
+*.pt
+*.pth
+*.ckpt
+*.log
+
 # Large generated metadata can be reproduced with scripts/build_uav90k.py
 UAV90K/metadata/samples.csv
 UAV90K/metadata/splits/*.txt

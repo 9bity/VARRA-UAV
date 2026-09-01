@@ -42,8 +42,8 @@ python -u scripts/train.py \
   --negative-manifest /path/to/fixed_dino_negatives.csv \
   --output-dir /path/to/run \
   --epochs 30 \
-  --batch-size 2 \
-  --num-workers 4 \
+  --batch-size 16 \
+  --num-workers 8 \
   --learning-rate 3e-4 \
   --seed 42 \
   --deterministic \
@@ -58,11 +58,14 @@ random states.
 After training, build the satellite index and evaluate. Neither operation
 changes model parameters.
 
-## Result status
+## Frozen reference configuration
 
-No experiment has been launched for the single-stage redesign yet. Recomputing
-the preserved two-stage baseline CSV with the corrected final-stage definition
-gives 81.84% Recall@1. The previously printed 72.01% value was the coarse
-retrieval diagnostic and must not be placed in the primary metric table.
-The baseline's remaining 82.73% LSR@15 / 70.16% HSR@15 / 14.10 m MLE /
-14.31 deg MHE numbers are likewise not claimed by this branch.
+The completed reference run used seed 42, 30 epochs, batch size 16, eight data
+workers, learning rate 3e-4, deterministic PyTorch algorithms, and a frozen
+DINOv2 ViT-B/14 backbone. The final test configuration was selected only on the
+fixed validation split: Top-K 15, candidate batch size 15, logit confidence
+fusion, and confidence weight 0.05.
+
+Machine-readable settings and hashes are stored in
+`configs/single_stage_seed42/`. Weights and logs are intentionally not
+distributed in this repository.

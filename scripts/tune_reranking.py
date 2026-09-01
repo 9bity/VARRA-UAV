@@ -309,8 +309,35 @@ def main() -> None:
     }
     output_path = args.output_dir / f"{args.split}_reranking_sweep.json"
     output_path.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
+    selected = {
+        "top_k": int(output["best"]["top_k"]),
+        "candidate_batch_size": int(args.candidate_batch_size),
+        "confidence_transform": str(output["best"]["confidence_transform"]),
+        "confidence_weight": float(output["best"]["confidence_weight"]),
+        "mle_protocol": "bearing-compatible",
+    }
+    split_files = dataset_info.get("files", {})
+    lock = {
+        "selection_source": f"fixed {args.split} split only",
+        "selection_rule": output["selection_rule"],
+        "selected": selected,
+        "validation_metrics": output["best"],
+        "checkpoint_sha256": file_sha256(args.checkpoint),
+        "index_sha256": file_sha256(args.index),
+        "validation_sweep_sha256": file_sha256(output_path),
+        "dataset_fingerprint": dataset_info["sha256"],
+        "split_hashes": {
+            split: split_files.get(f"metadata/splits/{split}.txt")
+            for split in ("train", "val", "test")
+        },
+        "seed": checkpoint.get("args", {}).get("seed"),
+        "git_revision": checkpoint.get("reproducibility", {}).get("git_revision"),
+    }
+    lock_path = args.output_dir / "locked_evaluation_config.json"
+    lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(output["best"], indent=2))
     print(f"saved {len(results)} settings to {output_path}")
+    print(f"locked validation-selected evaluation settings to {lock_path}")
 
 
 if __name__ == "__main__":

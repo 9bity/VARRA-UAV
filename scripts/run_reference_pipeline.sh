@@ -35,14 +35,15 @@ python scripts/prepare_dino_negatives.py \
   --num-workers 8 \
   --device cuda --amp
 
-# The only model-training command in the complete pipeline.
+# The only model-training command in the complete pipeline. These values are
+# the frozen single_stage_seed42 experiment settings.
 python -u scripts/train.py \
   --dataset "${UAV90K_ROOT}" \
   --negative-manifest "${OUTPUT_ROOT}/fixed_dino_negatives.csv" \
   --output-dir "${OUTPUT_ROOT}/train" \
   --epochs 30 \
-  --batch-size 2 \
-  --num-workers 4 \
+  --batch-size 16 \
+  --num-workers 8 \
   --learning-rate 3e-4 \
   --seed 42 \
   --deterministic \
@@ -57,14 +58,26 @@ python scripts/build_satellite_index.py \
   --num-workers 8 \
   --device cuda --amp
 
+# Tune reranking on validation only and write locked_evaluation_config.json.
+python -u scripts/tune_reranking.py \
+  --dataset "${UAV90K_ROOT}" \
+  --checkpoint "${OUTPUT_ROOT}/train/best.pt" \
+  --index "${OUTPUT_ROOT}/train/satellite_index.pt" \
+  --output-dir "${OUTPUT_ROOT}/val_tuning" \
+  --split val \
+  --max-top-k 15 \
+  --candidate-batch-size 15 \
+  --device cuda --amp
+
 python -u scripts/evaluate.py \
   --dataset "${UAV90K_ROOT}" \
   --checkpoint "${OUTPUT_ROOT}/train/best.pt" \
   --index "${OUTPUT_ROOT}/train/satellite_index.pt" \
   --output-dir "${OUTPUT_ROOT}/train/eval/test_final" \
   --split test \
-  --top-k 5 \
-  --candidate-batch-size 5 \
-  --confidence-weight 0.5 \
+  --top-k 15 \
+  --candidate-batch-size 15 \
+  --confidence-transform logit \
+  --confidence-weight 0.05 \
   --mle-protocol bearing-compatible \
   --device cuda --amp

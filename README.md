@@ -1,4 +1,4 @@
-# UAV
+# VARRA-UAV
 
 Research code for global UAV-to-satellite localization and heading estimation
 using Bearing-UAV-90K images and a DINOv2-based coarse-to-fine model.

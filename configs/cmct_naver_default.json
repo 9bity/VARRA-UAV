@@ -1,0 +1,16 @@
+{
+  "name": "CMCT-Naver fixed defaults",
+  "selection_source": "predeclared algorithm defaults; not tuned on navigation test routes",
+  "position_sigma_m": 45.0,
+  "heading_sigma_deg": 45.0,
+  "min_gain": 0.15,
+  "max_gain": 0.85,
+  "reject_threshold": 0.03,
+  "process_noise_m": 3.0,
+  "motion_noise_ratio": 0.05,
+  "initial_uncertainty_m": 5.0,
+  "max_uncertainty_m": 150.0,
+  "reset_after_rejections": 3,
+  "reset_consistency_m": 30.0,
+  "reset_min_confidence": 0.65
+}

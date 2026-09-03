@@ -119,3 +119,9 @@ python scripts/evaluate_single_stage_navigation.py \
 This public runner evaluates rotated satellite-map crops in a reproducible 2D
 closed loop. It must not be described as continuous Google Earth 3D UAV-view
 navigation.
+
+An independent navigation-only temporal comparison is provided by
+`scripts/evaluate_cmct_navigation.py`. CMCT-Naver consumes the unchanged
+single-stage model's final position, circular heading, and selected-candidate
+quality; it does not alter or retrain the localizer. See
+[`docs/CMCT_NAVIGATION.md`](docs/CMCT_NAVIGATION.md).

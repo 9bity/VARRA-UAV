@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union
 
 import torch
 from torch import Tensor, nn
@@ -32,6 +34,8 @@ class DINOv2Backbone(nn.Module):
         pretrained: bool = True,
         freeze: bool = True,
         model: Optional[nn.Module] = None,
+        hub_repo: Optional[Union[str, Path]] = None,
+        checkpoint_path: Optional[Union[str, Path]] = None,
     ) -> None:
         super().__init__()
         if model_name not in self.MODEL_DIMS:
@@ -40,11 +44,24 @@ class DINOv2Backbone(nn.Module):
         self.output_dim = self.MODEL_DIMS[model_name]
         self.patch_size = 14
         self.freeze = freeze
-        self.model = model or torch.hub.load(
-            "facebookresearch/dinov2",
-            model_name,
-            pretrained=pretrained,
-        )
+        if model is None:
+            configured_repo = hub_repo or os.environ.get("DINOV2_REPO")
+            repository = str(configured_repo or "facebookresearch/dinov2")
+            source = "local" if Path(repository).is_dir() else "github"
+            configured_checkpoint = checkpoint_path or os.environ.get("DINOV2_WEIGHTS")
+            self.model = torch.hub.load(
+                repository,
+                model_name,
+                pretrained=pretrained and configured_checkpoint is None,
+                source=source,
+            )
+            if configured_checkpoint is not None:
+                state = torch.load(
+                    Path(configured_checkpoint), map_location="cpu", weights_only=False
+                )
+                self.model.load_state_dict(state)
+        else:
+            self.model = model
         if freeze:
             self.model.requires_grad_(False)
             self.model.eval()

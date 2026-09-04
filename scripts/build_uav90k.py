@@ -47,6 +47,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=SPLIT_SEED,
+        help=f"Per-city train/val/test shuffle seed (default: {SPLIT_SEED}).",
+    )
+    parser.add_argument(
         "--link-mode",
         choices=("hardlink", "copy", "manifest"),
         default="hardlink",
@@ -193,9 +199,9 @@ def map_pixel_to_geo(map_data: dict[str, Any], x: float, y: float) -> tuple[floa
     return latitude, longitude
 
 
-def build_split_assignments(sample_ids: list[str]) -> dict[str, str]:
+def build_split_assignments(sample_ids: list[str], seed: int = SPLIT_SEED) -> dict[str, str]:
     shuffled = list(sample_ids)
-    random.Random(SPLIT_SEED).shuffle(shuffled)
+    random.Random(seed).shuffle(shuffled)
     train_end = int(len(shuffled) * SPLIT_RATIOS["train"])
     val_end = train_end + int(len(shuffled) * SPLIT_RATIOS["val"])
     assignments: dict[str, str] = {}
@@ -483,7 +489,7 @@ def main() -> None:
     city_sample_ids = prepare_sample_ids(city_rows, source_root)
     assignments: dict[str, str] = {}
     for city_name in CITY_NAMES:
-        assignments.update(build_split_assignments(city_sample_ids[city_name]))
+        assignments.update(build_split_assignments(city_sample_ids[city_name], args.seed))
 
     print("[1/5] Materializing city maps")
     map_rows = build_maps(cities, output_root, args.link_mode)
@@ -572,7 +578,7 @@ def main() -> None:
             **split_counts,
         },
         "split": {
-            "seed": SPLIT_SEED,
+            "seed": args.seed,
             "method": "per-city Python random.Random shuffle",
             "ratios": SPLIT_RATIOS,
         },

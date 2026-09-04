@@ -19,12 +19,23 @@ class GlobalToLocalOutput:
     localization: LocalizerOutput
 
 
+@dataclass
+class SingleStageOutput:
+    """Outputs used by the one-run positive/negative joint objective."""
+
+    query_descriptor: Tensor
+    satellite_descriptor: Tensor
+    positive_localization: LocalizerOutput
+    negative_localization: LocalizerOutput
+
+
 class GlobalToLocalModel(nn.Module):
     """One shared DINOv2 backbone with trainable retrieval and VARRA heads."""
 
     def __init__(
         self,
         backbone_name: str = "dinov2_vitb14",
+        backbone_pretrained: bool = True,
         freeze_backbone: bool = True,
         retrieval_dim: int = 256,
         local_model_dim: int = 256,
@@ -35,6 +46,7 @@ class GlobalToLocalModel(nn.Module):
         super().__init__()
         self.backbone = backbone or DINOv2Backbone(
             model_name=backbone_name,
+            pretrained=backbone_pretrained,
             freeze=freeze_backbone,
         )
         self.retrieval = RetrievalHead(
@@ -83,6 +95,34 @@ class GlobalToLocalModel(nn.Module):
         )
         return tokens, (3 * tile_grid_h, 3 * tile_grid_w)
 
+    def localize_candidates(
+        self,
+        query: DINOFeatures,
+        satellite_tiles: Tensor,
+        tile_validity: Optional[Tensor] = None,
+    ) -> LocalizerOutput:
+        """Localize one encoded query against one or more 3x3 candidates."""
+
+        satellite_tokens, satellite_grid = self.extract_satellite_grid(satellite_tiles)
+        candidate_count = satellite_tiles.shape[0]
+        query_tokens = query.patch_tokens
+        if query_tokens.shape[0] == 1 and candidate_count > 1:
+            query_tokens = query_tokens.expand(candidate_count, -1, -1)
+        elif query_tokens.shape[0] != candidate_count:
+            raise ValueError("Query and candidate batch sizes are incompatible")
+        satellite_valid_mask = (
+            self.expand_tile_validity(tile_validity, satellite_grid)
+            if tile_validity is not None
+            else None
+        )
+        return self.localizer(
+            query_tokens,
+            satellite_tokens,
+            query.grid_size,
+            satellite_grid,
+            satellite_valid_mask,
+        )
+
     @staticmethod
     def expand_tile_validity(
         tile_validity: Tensor, satellite_grid: tuple[int, int]
@@ -105,17 +145,36 @@ class GlobalToLocalModel(nn.Module):
     ) -> GlobalToLocalOutput:
         query_descriptor, query = self.encode_query(query_images)
         satellite_descriptor, _ = self.encode_satellite(positive_satellite_tiles)
-        satellite_tokens, satellite_grid = self.extract_satellite_grid(satellite_tiles)
-        satellite_valid_mask = (
-            self.expand_tile_validity(tile_validity, satellite_grid)
-            if tile_validity is not None
-            else None
-        )
-        localization = self.localizer(
-            query.patch_tokens,
-            satellite_tokens,
-            query.grid_size,
-            satellite_grid,
-            satellite_valid_mask,
-        )
+        localization = self.localize_candidates(query, satellite_tiles, tile_validity)
         return GlobalToLocalOutput(query_descriptor, satellite_descriptor, localization)
+
+    def forward_single_stage(
+        self,
+        query_images: Tensor,
+        positive_satellite_tiles: Tensor,
+        positive_candidate_tiles: Tensor,
+        negative_candidate_tiles: Tensor,
+        positive_tile_validity: Optional[Tensor] = None,
+        negative_tile_validity: Optional[Tensor] = None,
+    ) -> SingleStageOutput:
+        """Jointly score a positive and a hard-negative candidate.
+
+        Query DINO features are extracted once and reused by both local
+        candidates.  This provides all supervision required by the retrieval,
+        pose, and quality heads in one optimizer run.
+        """
+
+        query_descriptor, query = self.encode_query(query_images)
+        satellite_descriptor, _ = self.encode_satellite(positive_satellite_tiles)
+        positive_localization = self.localize_candidates(
+            query, positive_candidate_tiles, positive_tile_validity
+        )
+        negative_localization = self.localize_candidates(
+            query, negative_candidate_tiles, negative_tile_validity
+        )
+        return SingleStageOutput(
+            query_descriptor=query_descriptor,
+            satellite_descriptor=satellite_descriptor,
+            positive_localization=positive_localization,
+            negative_localization=negative_localization,
+        )

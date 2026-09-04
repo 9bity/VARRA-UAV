@@ -31,8 +31,10 @@ UAV90K/
 ```
 
 The image and map files are created as NTFS hard links by default. They occupy
-no second copy of the image data and do not modify the source dataset. Generated
-images, feature files, and the 90K-row sample manifest are excluded from Git.
+no second copy of the image data and do not modify the source dataset. The
+downloaded dataset, generated images, feature files, 90K-row sample manifest,
+and generated split lists are excluded from Git. They are regenerated from the
+official dataset with seed 42.
 
 ## Satellite database
 
@@ -75,8 +77,9 @@ labels are retained for reproducibility.
 ```powershell
 python scripts/build_uav90k.py `
   --source D:\Bearing-UAV\bearinguav\Bearing_UAV_90K `
-  --output D:\paper\UAV\UAV90K `
-  --link-mode hardlink
+  --output D:\paper\UAV_single_stage\UAV90K `
+  --link-mode hardlink `
+  --seed 42
 ```
 
 The conversion is idempotent: an interrupted run can be resumed. Existing

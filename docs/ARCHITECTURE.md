@@ -1,80 +1,112 @@
-# Network architecture
+# Single-stage network architecture
 
-The initial model is deliberately split into independently testable stages.
+## Design boundary
 
-```text
-single UVP -> shared frozen DINOv2 -> global descriptor -> Top-K retrieval
-                                      dense tokens -----------+
-                                                               |
-Top-K tile -> 3x3 expansion -> shared DINOv2 -> dense tokens --+
-                                                               v
-                view-adaptive reciprocal geometric attention (VARRA)
-                                      |
-                      position + heading + confidence
-```
+The redesign preserves the original proposal:
 
-## Backbone
+1. accept one UVP and no RSB prior;
+2. retrieve satellite tiles from a global DINOv2 index;
+3. expand each retrieved center to its 3x3 neighborhood;
+4. compare UVP and satellite dense features with cross-view attention;
+5. predict global position and heading.
 
-The default backbone is DINOv2 ViT-B/14. It is frozen in the first training
-stage. A single forward pass exposes both the normalized CLS descriptor and the
-dense patch-token field. Inputs are resized to dimensions divisible by 14:
+Only the candidate-scoring architecture and supervision path change. There is
+no trained-model-dependent mining stage.
 
-- query UVP: 252 x 252, producing an 18 x 18 token field;
-- each satellite tile: 252 x 252, producing an 18 x 18 token field;
-- nine tile-token fields are stitched spatially into one 54 x 54 field.
-
-The nine tiles are encoded independently as one batched DINOv2 call. Compared
-with sending a single 756 x 756 image through ViT, this preserves the same
-ground sampling distance and final token coverage while reducing the quadratic
-backbone-attention cost by roughly nine times. It also allows satellite token
-fields to be cached per tile.
-
-## Retrieval
-
-The global retrieval head has separate zero-initialized residual adapters for
-UVP and satellite descriptors, followed by a shared semantic projection. Its
-L2-normalized output supports cosine search. `ExactSatelliteIndex` is the
-reference implementation; a FAISS backend can replace it without changing the
-model interface.
-
-## Local registration and VARRA
-
-VARRA receives dense DINOv2 token fields from both views:
-
-1. view-specific residual adapters align UVP and satellite distributions;
-2. UVP-to-satellite and satellite-to-UVP attentions are computed independently;
-3. the geometric mean retains mutually supported correspondences;
-4. soft correspondences estimate a differentiable 2D similarity transform;
-5. the estimated rotation, scale, and translation gate inconsistent matches;
-6. the refined correspondence field produces the satellite heatmap.
-
-The final localizer predicts continuous mosaic-normalized position, a normalized
-`(cos(theta), sin(theta))` heading vector, and candidate confidence. Global pixel
-coordinates are recovered from the candidate mosaic origin.
-
-## Training behavior of 3x3 candidates
-
-For a query with ground-truth tile `g`, any tile whose 3x3 neighborhood contains
-`g` is a valid positive center. `LocalRegistrationDataset` changes that center
-deterministically each epoch. This prevents the model from learning the invalid
-shortcut that the target is always in the central tile.
-
-Negative and retrieval-mined candidates will be introduced in the training
-pipeline after the model-level tensor contracts are verified.
-
-The provided loss module combines multi-positive contrastive retrieval,
-continuous position regression, continuous-point heatmap likelihood, circular
-heading similarity, and optional candidate-confidence supervision. The
-multi-positive mask is important because several UVPs in a batch can correspond
-to the same satellite tile and must not be treated as mutual negatives.
-
-During joint training, the complete forward contract is intentionally explicit:
+## Inference
 
 ```text
-query UVP + positive single satellite tile + candidate 3x3 satellite tile grid
+                              OFFLINE DATABASE
+satellite tiles -> shared DINOv2 -> satellite adapter -> learned descriptors
+                                                        -> cosine index
+
+                                ONLINE QUERY
+single UVP -> shared DINOv2 -> UVP adapter -> query descriptor
+                                           -> Top-K global retrieval
+                                           -> each center expands to 3x3
+
+UVP 18x18 tokens -----------------------------+
+                                                -> VARRA -> heatmap
+3x3 satellite tiles -> DINOv2 -> 54x54 tokens -+          -> position
+                                                           -> heading
+                                                           -> quality
 ```
 
-The single tile supervises the global retrieval descriptor. The 3x3 tile grid is
-used only by VARRA and the local prediction heads. At inference time, only the
-UVP is provided by the caller; single tiles and mosaics are fetched from the
-offline satellite database after Top-K search.
+The final candidate score fuses its global cosine similarity and learned local
+quality. The selected local coordinate is converted to a global map coordinate
+with the candidate mosaic origin.
+
+## Shared DINOv2 backbone
+
+DINOv2 ViT-B/14 is shared by both views. A 252x252 image produces an 18x18
+patch-token grid. Nine satellite tiles are encoded independently and stitched
+into a 54x54 feature grid, preserving ground sampling distance while avoiding
+the quadratic cost of one 756x756 Transformer input.
+
+## Global cross-view retrieval
+
+UVP and satellite CLS tokens pass through view-specific residual adapters and a
+shared semantic projector. L2-normalized descriptors are trained with symmetric
+multi-positive InfoNCE. Queries sharing one ground-truth tile are positives,
+not false in-batch negatives.
+
+## VARRA local registration
+
+VARRA applies view-specific token adapters, bidirectional UVP-to-satellite and
+satellite-to-UVP attention, reciprocal agreement, and a differentiable 2D
+similarity transform. Its output contains:
+
+- a satellite localization heatmap;
+- a geometric heading vector;
+- scale, rotation, and translation;
+- mean reciprocal semantic agreement;
+- geometric reprojection residual;
+- cross-view fused UVP and satellite features.
+
+## Geometric candidate-quality head
+
+The former feature-only confidence head is replaced by a quality head. It uses
+pooled cross-view features together with heatmap peak, heatmap entropy,
+reciprocal agreement, and geometric residual. This makes reranking depend on
+observable semantic and geometric consistency.
+
+For every training query, the head receives one positive and one fixed hard
+negative candidate. It learns both calibrated binary quality and a direct
+positive-over-negative margin. At inference its logit remains compatible with
+the existing global/local score fusion interface.
+
+## One continuous training run
+
+Before training, the frozen official DINOv2 backbone creates a deterministic
+nearest-neighbor manifest. Candidates whose 3x3 area contains the query's true
+tile are excluded. This operation has no optimizer and produces no checkpoint;
+it is equivalent to preparing metadata.
+
+Each training item contains:
+
+```text
+UVP
++ exact positive satellite tile       -> retrieval supervision
++ positive 3x3 candidate              -> position/heatmap/heading supervision
++ fixed DINOv2 hard-negative candidate -> quality supervision
+```
+
+The model extracts the UVP once, reuses it for both candidates, and optimizes:
+
+```text
+L = wr * Lretrieval
+  + wp * Lposition
+  + wm * Lheatmap
+  + wh * Lheading
+  + wq * (Lquality-BCE + Lquality-rank)
+```
+
+All task heads are active from epoch one. There is one optimizer, one learning
+rate schedule, and one checkpoint sequence. `--resume` restores an interrupted
+run and is not a second training stage.
+
+## Post-training index
+
+After the single training run, all satellite tiles are encoded once with the
+final learned retrieval head. Building this index and running evaluation are
+inference operations, not additional training.
